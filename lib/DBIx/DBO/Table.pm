@@ -48,7 +48,13 @@ sub _new {
     bless { %$_, Schema => $schema, Name => $table, DBO => $dbo, LastInsertID => undef }, $class;
 }
 
-sub _tables {
+=head2 tables
+
+Return a list of L<DBIx::DBO::Table> objects, which will always be this C<Table> object.
+
+=cut
+
+sub tables {
     $_[0];
 }
 

@@ -1,6 +1,6 @@
 ---
 name: DBIx-DBO
-version: 0.01_02
+version: 0.01_03
 author:
   - 'Vernon Lyon <vlyon@cpan.org>'
 abstract: An OO interface to SQL queries and results.  Easily constructs SQL queries, and simplifies processing of the returned data.
@@ -20,7 +20,7 @@ bugtracker: "http://rt.cpan.org/NoAuth/Bugs.html?Dist=DBIx-DBO"
 provides:
   DBIx::DBO:
     file: lib/DBIx/DBO.pm
-    version: 0.01_02
+    version: 0.01_03
   DBIx::DBO::Query:
     file: lib/DBIx/DBO/Query.pm
   DBIx::DBO::Row:
