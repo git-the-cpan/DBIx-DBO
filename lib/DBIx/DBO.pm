@@ -10,8 +10,8 @@ use DBIx::DBO::Query;
 use DBIx::DBO::Row;
 
 # The C3 method resolution order is needed for optimal functioning when DBIx::DBO is being subclassed.
-my $mro_c3 = $] >= 5.009_005 || eval {require MRO::Compat};
-my $c3_initialize;
+my $mro_c3 = ($] >= 5.009_005 or eval {require MRO::Compat});
+my $need_c3_initialize;
 
 =head1 NAME
 
@@ -19,7 +19,7 @@ DBIx::DBO - An OO interface to SQL queries and results.  Easily constructs SQL q
 
 =cut
 
-our $VERSION = '0.02_01';
+our $VERSION = '0.02_02';
 
 =head1 SYNOPSIS
 
@@ -94,7 +94,7 @@ sub import {
   $dbo = DBIx::DBO->connect($data_source, $username, $password, \%attr)
       or die $DBI::errstr;
 
-Takes the same arguments as L<DBI-E<gt>connect|DBI/"connect"> for a read-write connection to a database. It returns the DBIx::DBO object if the connection succeeds or undefined on failure.
+Takes the same arguments as L<DBI-E<gt>connect|DBI/"connect"> for a read-write connection to a database. It returns the C<DBIx::DBO> object if the connection succeeds or undefined on failure.
 
 =head2 connect_readonly
 
@@ -124,7 +124,7 @@ sub connect {
         $new->{dbh}->set_err('', $@);
         return;
     }
-    Class::C3::initialize() if $c3_initialize;
+    Class::C3::initialize() if $need_c3_initialize;
     $class->_bless_dbo($new);
 }
 
@@ -143,7 +143,7 @@ sub connect_readonly {
         $new->{rdbh}->set_err('', $@);
         return;
     }
-    Class::C3::initialize() if $c3_initialize;
+    Class::C3::initialize() if $need_c3_initialize;
     $class->_bless_dbo($new);
 }
 
@@ -232,7 +232,7 @@ sub _set_inheritance {
         mro::set_mro($class, 'c3');
         mro::set_mro($class.'::'.$_, 'c3') for qw(Table Query Row);
         # If perl < 5.9.5 then we need to call Class::C3::initialize()
-        $c3_initialize = $] < 5.009_005;
+        $need_c3_initialize = $] < 5.009_005;
     }
     return $class;
 }

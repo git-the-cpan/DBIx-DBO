@@ -65,7 +65,7 @@ sub _new {
     for my $table (@_) {
         $me->join_table($table);
     }
-    $me->_blank;
+    $me->reset;
     return wantarray ? ($me, $me->tables) : $me;
 }
 
@@ -139,7 +139,15 @@ sub _showing {
     @{$me->{build_data}{Showing}} ? @{$me->{build_data}{Showing}} : @{$me->{Tables}};
 }
 
-sub _blank {
+=head2 reset
+
+  $query->reset;
+
+Reset the query, start over with a clean slate.
+
+=cut
+
+sub reset {
     my $me = shift;
     $me->unwhere;
 #    $me->{IsDistinct} = 0;
