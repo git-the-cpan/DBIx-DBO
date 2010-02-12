@@ -19,7 +19,7 @@ DBIx::DBO - An OO interface to SQL queries and results.  Easily constructs SQL q
 
 =cut
 
-our $VERSION = '0.02_02';
+our $VERSION = '0.03';
 
 =head1 SYNOPSIS
 
@@ -202,8 +202,7 @@ sub _require_dbd_class {
         (my $err = $@) =~ s/\n.*$//; # Remove the last line
         chomp @warn;
         chomp $err;
-        $@ = join "\n", "Can't load $dbd driver", @warn, $err;
-        return;
+        die join "\n", "Can't load $dbd driver", @warn, $err;
     }
 
     delete $INC{$file};
@@ -354,11 +353,21 @@ sub _get_table_info {
     my %h;
     $h{Column_Idx}{$_->{COLUMN_NAME}} = $_->{ORDINAL_POSITION} for @$cols;
     $h{Columns} = [ sort { $h{Column_Idx}{$a} cmp $h{Column_Idx}{$b} } keys %{$h{Column_Idx}} ];
+
     $h{PrimaryKeys} = [];
-    if (my $keys = $me->rdbh->primary_key_info(undef, $schema, $table)) {
-        $h{PrimaryKeys}[$_->{KEY_SEQ} - 1] = $_->{COLUMN_NAME} for @{$keys->fetchall_arrayref({})};
-    }
+    $me->_set_table_key_info($schema, $table, \%h);
+
     $me->{TableInfo}{defined $schema ? $schema : ''}{$table} = \%h;
+}
+
+sub _set_table_key_info {
+    my $me = shift;
+    my $schema = shift;
+    my $table = shift;
+    my $h = shift;
+    if (my $keys = $me->rdbh->primary_key_info(undef, $schema, $table)) {
+        $h->{PrimaryKeys}[$_->{KEY_SEQ} - 1] = $_->{COLUMN_NAME} for @{$keys->fetchall_arrayref({})};
+    }
 }
 
 sub table_info {
@@ -541,7 +550,7 @@ This package is free software; you can redistribute it and/or modify it under th
 
 =head1 SEE ALSO
 
-L<DBI>, DBIx::SearchBuilder.
+L<DBI>, L<DBIx::SearchBuilder>.
 
 
 =cut

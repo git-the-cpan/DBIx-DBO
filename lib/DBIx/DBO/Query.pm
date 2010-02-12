@@ -134,11 +134,6 @@ sub _table_alias {
     @{$me->{Tables}} > 1 ? 't'.($i + 1) : ();
 }
 
-sub _showing {
-    my $me = shift;
-    @{$me->{build_data}{Showing}} ? @{$me->{build_data}{Showing}} : @{$me->{Tables}};
-}
-
 =head2 reset
 
   $query->reset;
@@ -151,10 +146,10 @@ sub reset {
     my $me = shift;
     $me->unwhere;
 #    $me->{IsDistinct} = 0;
-    undef @{$me->{build_data}{Showing}};
-    undef @{$me->{build_data}{GroupBy}};
-    undef @{$me->{build_data}{OrderBy}};
-    undef $me->{build_data}{LimitOffset};
+    $me->show;
+    $me->group_by;
+    $me->order_by;
+    $me->limit;
 }
 
 =head2 show
@@ -258,7 +253,7 @@ sub where {
     # If the $fld is just a scalar use it as a column name not a value
     my ($fld, $fld_func, $fld_opt) = $me->_parse_col_val(shift);
     my $op = shift;
-    my ($val, $val_func, $val_opt) = $me->_parse_val(shift, 'Auto');
+    my ($val, $val_func, $val_opt) = $me->_parse_val(shift, Check => 'Auto');
 
     # Validate the fields
     for my $f (@$fld, @$val) {
@@ -387,11 +382,9 @@ sub _add_where {
 sub _parse_col_val {
     my $me = shift;
     my $col = shift;
-    return $me->_parse_val($col, 'Column') if ref $col;
-    for my $tbl ($me->tables) {
-        return [ $tbl->column($col) ] if exists $tbl->{Column_Idx}{$col};
-    }
-    ouch 'No such column: '.$col;
+    my %c = (Check => 'Column', @_);
+    return $me->_parse_val($col, %c) if ref $col;
+    return [ $me->_parse_col($col, $c{Aliases}) ];
 }
 
 =head2 group_by
@@ -411,7 +404,7 @@ sub group_by {
     undef $me->{build_data}{group};
     undef @{$me->{build_data}{GroupBy}};
     for my $col (@_) {
-        my @group = $me->_parse_col_val($col);
+        my @group = $me->_parse_col_val($col, Aliases => 1);
         push @{$me->{build_data}{GroupBy}}, \@group;
     }
 }
@@ -433,7 +426,7 @@ sub order_by {
     undef $me->{build_data}{order};
     undef @{$me->{build_data}{OrderBy}};
     for my $col (@_) {
-        my @order = $me->_parse_col_val($col);
+        my @order = $me->_parse_col_val($col, Aliases => 1);
         push @{$me->{build_data}{OrderBy}}, \@order;
     }
 }

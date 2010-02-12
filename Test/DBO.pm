@@ -56,8 +56,25 @@ sub import {
     $dbd_name = shift;
     my %opt = splice @_;
 
-    grep $_ eq $dbd, DBI->available_drivers or
-        plan skip_all => "No $dbd driver available!";
+    grep $_ eq $dbd, DBI->available_drivers
+        or plan skip_all => "No $dbd driver available!";
+
+    # Skip tests with missing module requirements
+    unless (eval { DBIx::DBO->_require_dbd_class($dbd) }) {
+        if ($@ =~ /^Can't load \Q$dbd\E driver\nCan't locate ([\w\/]+)\.pm in \@INC /) {
+            # Module is not installed
+            ($_ = $1) =~ s'/'::'g;
+        } elsif ($@ =~ /^Can't load \Q$dbd\E driver\n([\w:]+ version [\d\.]+) required/) {
+            # Module is not correct version
+            ($_ = $1);
+        } elsif ($@ =~ /^Can't load \Q$dbd\E driver\n\Q$dbd_name\E is not yet supported/) {
+            # DBM is not yet supported
+            plan skip_all => "Can't load $dbd driver: $dbd_name is not yet supported";
+        } else {
+            die $@;
+        }
+        plan skip_all => "Can't load $dbd driver: $_ is required";
+    }
 
     {
         no strict 'refs';
@@ -295,7 +312,10 @@ sub query_methods {
     # Fetch the first row
     $r = $q->fetch;
     ok $r->isa('DBIx::DBO::Row'), 'Method DBIx::DBO::Query->fetch';
-    is $r_str, "$r", 'Re-use the same row object';
+    SKIP: {
+        skip "Re-use row doesn't work with Devel::Cover", 1 if exists $INC{'Devel/Cover.pm'};
+        is $r_str, "$r", 'Re-use the same row object';
+    }
 
     # Access methods
     is $r->{name}, 'John Doe', 'Access row as a hashref';
@@ -314,6 +334,14 @@ sub query_methods {
     1 while $q->fetch;
     is $q->rows, 6, 'Row count is 6';
 
+    # Reset the Query
+    $q->reset;
+    is $q->sql, $dbo->query($t)->sql, 'Method DBIx::DBO::Query->reset';
+
+    # Group by the first initial
+    $q->show({FUNC => 'SUBSTRING(?, 1, 1)', COL => 'name', AS => 'initial'});
+    ok(($q->group_by('initial'), $q->run), 'Method DBIx::DBO::Query->group_by') or diag sql_err($q);
+
     $q->finish;
     return $q;
 }
@@ -322,9 +350,11 @@ sub advanced_query_methods {
     my $dbo = shift;
     my $t = shift;
     my $q = shift;
+    $q->reset;
 
     # Show specific columns only
     $q->show({ FUNC => 'UPPER(?)', COL => 'name', AS => 'name' }, 'id', 'name');
+    $q->order_by('id');
     is $q->fetch->{name}, 'JOHN DOE', 'Method DBIx::DBO::Query->show';
     is $q->row ** $t ** 'name', 'John Doe', 'Access specific column';
 
@@ -432,11 +462,13 @@ sub Dump {
     require Data::Dumper;
     my $d = Data::Dumper->new([$val], [$var]);
     my %seen;
-    @_no_recursion = ($val);
-    if (reftype $val eq 'ARRAY')   { _Find_Seen(\%seen, $_) for @$val }
-    elsif (reftype $val eq 'HASH') { _Find_Seen(\%seen, $_) for values %$val }
-    elsif (reftype $val eq 'REF')  { _Find_Seen(\%seen, $$val) }
-    $d->Seen(\%seen);
+    if (defined $val) {
+        @_no_recursion = ($val);
+        if (reftype $val eq 'ARRAY')   { _Find_Seen(\%seen, $_) for @$val }
+        elsif (reftype $val eq 'HASH') { _Find_Seen(\%seen, $_) for values %$val }
+        elsif (reftype $val eq 'REF')  { _Find_Seen(\%seen, $$val) }
+        $d->Seen(\%seen);
+    }
     warn $d->Dump;
 }
 
