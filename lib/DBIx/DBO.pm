@@ -23,7 +23,7 @@ DBIx::DBO - An OO interface to SQL queries and results.  Easily constructs SQL q
 
 =cut
 
-our $VERSION = '0.03_03';
+our $VERSION = '0.04';
 
 =head1 SYNOPSIS
 
@@ -32,7 +32,7 @@ our $VERSION = '0.03_03';
   # Create the DBO
   my $dbo = DBIx::DBO->connect('DBI:mysql:my_db', 'me', 'mypasswd') or die $DBI::errstr;
 
-  # Create a "readonly" connection - useful for a slave database
+  # Create a "read-only" connection - useful for a slave database
   $dbo->connect_readonly('DBI:mysql:my_db', 'me', 'mypasswd') or die $DBI::errstr;
 
   # Start with a Query object
@@ -66,13 +66,13 @@ our $VERSION = '0.03_03';
 
 =head1 DESCRIPTION
 
-This module provides a convenient and efficient way to access a database. It can construct queries for you and returns the results in easy to use methods.
+This module provides a convenient and efficient way to access a database.  It can construct queries for you and returns the results in easy to use methods.
 
-Once you've created a C<DBIx::DBO> object using one or both of C<connect> or C<connect_readonly>, you can begin creating C<DBIx::DBO::Query> objects. These are the "workhorse" objects, they encapsulate an entire query with JOINs, WHERE clauses, etc. You need not have to know about what created the C<Query> to be able to use or modify it. This makes it valuable in environments like mod_perl or large projects that prefer an object oreinted approach to data.
+Once you've created a C<DBIx::DBO> object using one or both of C<connect> or C<connect_readonly>, you can begin creating C<DBIx::DBO::Query> objects.  These are the "workhorse" objects, they encapsulate an entire query with JOINs, WHERE clauses, etc.  You need not have to know about what created the C<Query> to be able to use or modify it.  This makes it valuable in environments like mod_perl or large projects that prefer an object oreinted approach to data.
 
-The query is only automatically executed when the data is requested. This is to make it possible to minimise lookups that may not be needed or to delay them as late as possible.
+The query is only automatically executed when the data is requested.  This is to make it possible to minimise lookups that may not be needed or to delay them as late as possible.
 
-The C<DBIx::DBO::Row> object returned can be treated as both an arrayref or a hashref. The data is aliased for efficient use of memory. C<Row> objects can be updated or deleted, even when created by JOINs (If the DB supports it).
+The C<DBIx::DBO::Row> object returned can be treated as both an arrayref or a hashref.  The data is aliased for efficient use of memory.  C<Row> objects can be updated or deleted, even when created by JOINs (If the DB supports it).
 
 =head1 METHODS
 
@@ -98,11 +98,11 @@ sub import {
   $dbo = DBIx::DBO->connect($data_source, $username, $password, \%attr)
       or die $DBI::errstr;
 
-Takes the same arguments as L<DBI-E<gt>connect|DBI/"connect"> for a I<read-write> connection to a database. It returns the C<DBIx::DBO> object if the connection succeeds or undefined on failure.
+Takes the same arguments as L<DBI-E<gt>connect|DBI/"connect"> for a I<read-write> connection to a database.  It returns the C<DBIx::DBO> object if the connection succeeds or undefined on failure.
 
 =head3 C<connect_readonly>
 
-Takes the same arguments as C<connect> for a I<read-only> connection to a database. It returns the C<DBIx::DBO> object if the connection succeeds or undefined on failure.
+Takes the same arguments as C<connect> for a I<read-only> connection to a database.  It returns the C<DBIx::DBO> object if the connection succeeds or undefined on failure.
 
 Both C<connect> & C<connect_readonly> can be called on a C<DBIx::DBO> object to add that respective connection to create a C<DBIx::DBO> with both I<read-write> and I<read-only> connections.
 
@@ -123,7 +123,8 @@ sub connect {
     }
     my $new = { rdbh => undef, ConnectArgs => [], ConnectReadOnlyArgs => [] };
     $new->{dbh} = $me->_connect($new->{ConnectArgs}, @_) or return;
-    my $class = $me->_require_dbd_class($new->{dbh}{Driver}{Name});
+    $new->{dbd} = $new->{dbh}{Driver}{Name};
+    my $class = $me->_require_dbd_class($new->{dbd});
     unless ($class) {
         $new->{dbh}->set_err('', $@);
         return;
@@ -142,7 +143,8 @@ sub connect_readonly {
     }
     my $new = { dbh => undef, ConnectArgs => [], ConnectReadOnlyArgs => [] };
     $new->{rdbh} = $me->_connect($new->{ConnectReadOnlyArgs}, @_) or return;
-    my $class = $me->_require_dbd_class($new->{rdbh}{Driver}{Name});
+    $new->{dbd} = $new->{rdbh}{Driver}{Name};
+    my $class = $me->_require_dbd_class($new->{dbd});
     unless ($class) {
         $new->{rdbh}->set_err('', $@);
         return;
@@ -158,6 +160,7 @@ sub _check_driver {
         ouch "Can't connect to data source '$dsn' because I can't work out what driver to use " .
             "(it doesn't seem to contain a 'dbi:driver:' prefix and the DBI_DRIVER env var is not set)";
     ref($me) =~ /::DBD::\Q$driver\E$/ or
+    $driver eq $me->{dbd} or
         ouch "Can't connect to the data source '$dsn'\n" .
             "The read-write and read-only connections must use the same DBI driver";
 }
@@ -171,7 +174,7 @@ sub _connect {
 
 ### Add a stack trace to PrintError & RaiseError
         $attr{HandleError} = sub {
-            if ($Config{_Debug_SQL} > 1) {
+            if ($Config{DebugSQL} > 1) {
                 $_[0] = Carp::longmess($_[0]);
                 return 0;
             }
@@ -216,28 +219,43 @@ sub _require_dbd_class {
 
 sub _set_inheritance {
     my $me = shift;
-    my $dbd = shift;
-    my $class = $me.'::DBD::'.$dbd;
+    my $_dbd = '::DBD::'.shift;
 
     no strict 'refs';
-    return $class if "@{$class.'::Common::ISA'}" eq $me.'::Common';
+    return $me.$_dbd if "@{$me.$_dbd.'::Common::ISA'}" eq $me.'::Common';
 
-    @{$class.'::Common::ISA'} = ($me.'::Common');
-    @{$class.'::ISA'} = ($me, $class.'::Common');
-    @{$class.'::'.$_.'::ISA'} = ($me.'::'.$_, $class.'::Common') for qw(Table Query Row);
+    @{$me.'::Common'.$_dbd.'::ISA'} = ($me.'::Common');
+    @{$me.$_.$_dbd.'::ISA'} = ($me.$_, $me.'::Common'.$_dbd) for ('', '::Table', '::Query', '::Row');
     if ($me ne __PACKAGE__) {
-        push @{$class.'::ISA'}, __PACKAGE__.'::DBD::'.$dbd;
-        push @{$class.'::'.$_.'::ISA'}, __PACKAGE__.'::DBD::'.$dbd.'::'.$_ for qw(Table Query Row);
-        eval "package ${me}";
-        eval "package ${me}::$_" for qw(Common Table Query Row);
+        for ('::Common', '', '::Table', '::Query', '::Row') {
+            push @{$me.$_.$_dbd.'::ISA'}, __PACKAGE__.$_.$_dbd;
+            eval "package ${me}$_";
+        }
     }
     if ($use_c3_mro) {
-        mro::set_mro($class, 'c3');
-        mro::set_mro($class.'::'.$_, 'c3') for qw(Table Query Row);
+        mro::set_mro($me.$_.$_dbd, 'c3') for ('::Common', '', '::Table', '::Query', '::Row');
         # If perl < 5.9.5 then we need to call Class::C3::initialize()
         $need_c3_initialize = $] < 5.009_005;
     }
-    return $class;
+    return $me.$_dbd;
+}
+
+sub _create_dbd_class {
+    my $me = shift;
+    my $class = shift;
+    my $base_class = shift;
+    my $_dbd = '::DBD::'.$me->{dbd};
+    $class =~ s/::DBD::\w+$//;
+    # Inheritance
+    no strict 'refs';
+    unless (@{$class.$_dbd.'::ISA'}) {
+        @{$class.$_dbd.'::ISA'} = ($class, $base_class.$_dbd);
+        if ($use_c3_mro) {
+            mro::set_mro($class.$_dbd, 'c3');
+            Class::C3::initialize() if $] < 5.009_005;
+        }
+    }
+    return $class.$_dbd;
 }
 
 sub _bless_dbo {
@@ -258,8 +276,8 @@ Tables can be specified by their name or an arrayref of schema and table name or
 =cut
 
 sub table {
-    my $class = ref($_[0]).'::Table';
-    $class->_new(@_);
+    (my $class = ref($_[0])) =~ s/(::DBD::\w+)$/::Table$1/;
+    $class->new(@_);
 }
 
 =head3 C<query>
@@ -277,8 +295,8 @@ In list context, the C<Query> object and L<DBIx::DBO::Table|DBIx::DBO::Table> ob
 =cut
 
 sub query {
-    my $class = ref($_[0]).'::Query';
-    $class->_new(@_);
+    (my $class = ref($_[0])) =~ s/(::DBD::\w+)$/::Query$1/;
+    $class->new(@_);
 }
 
 =head3 C<row>
@@ -291,27 +309,27 @@ Create and return a new L<DBIx::DBO::Row|DBIx::DBO::Row> object.
 =cut
 
 sub row {
-    my $class = ref($_[0]).'::Row';
-    $class->_new(@_);
+    (my $class = ref($_[0])) =~ s/(::DBD::\w+)$/::Row$1/;
+    $class->new(@_);
 }
 
 =head3 C<selectrow_array>
 
   $dbo->selectrow_array($statement, \%attr, @bind_values);
 
-This provides access to the L<DBI-E<gt>selectrow_array|DBI/"selectrow_array"> method.
+This provides access to the L<DBI-E<gt>selectrow_array|DBI/"selectrow_array"> method.  It defaults to using the I<read-only> C<DBI> handle.
 
 =head3 C<selectrow_arrayref>
 
   $dbo->selectrow_arrayref($statement, \%attr, @bind_values);
 
-This provides access to the L<DBI-E<gt>selectrow_arrayref|DBI/"selectrow_arrayref"> method.
+This provides access to the L<DBI-E<gt>selectrow_arrayref|DBI/"selectrow_arrayref"> method.  It defaults to using the I<read-only> C<DBI> handle.
 
 =head3 C<selectall_arrayref>
 
   $dbo->selectall_arrayref($statement, \%attr, @bind_values);
 
-This provides access to the L<DBI-E<gt>selectall_arrayref|DBI/"selectall_arrayref"> method.
+This provides access to the L<DBI-E<gt>selectall_arrayref|DBI/"selectall_arrayref"> method.  It defaults to using the I<read-only> C<DBI> handle.
 
 =cut
 
@@ -451,22 +469,35 @@ The I<read-only> C<DBI> handle, or if there is no I<read-only> connection, the I
   $dbo->do($statement, \%attr) or die $dbo->dbh->errstr;
   $dbo->do($statement, \%attr, @bind_values) or die ...
 
-This provides access to the L<DBI-E<gt>do|DBI/"do"> method. It defaults to using the I<read-write> C<DBI> handle.
+This provides access to the L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using the I<read-write> C<DBI> handle.
 
 =cut
 
+sub _auto_reconnect {
+    my $me = shift;
+    my $handle = shift;
+    my ($d, $c) = $handle ne 'read-only' ? qw(dbh ConnectArgs) : qw(rdbh ConnectReadOnlyArgs);
+    ouch "No $handle handle connected" unless defined $me->{$d};
+    $me->{$d} = $me->_connect($me->{$c}) unless $me->{$d}->ping;
+    return $me->{$d};
+}
+
 sub dbh {
     my $me = shift;
+    if (my $handle = $me->config('UseHandle')) {
+        return $me->_auto_reconnect($handle);
+    }
     ouch 'Invalid action for a read-only connection' unless $me->{dbh};
-    return $me->{dbh} if $me->{dbh}->ping;
-    $me->{dbh} = $me->_connect($me->{ConnectArgs});
+    $me->_auto_reconnect('read-write');
 }
 
 sub rdbh {
     my $me = shift;
+    if (my $handle = $me->config('UseHandle')) {
+        return $me->_auto_reconnect($handle);
+    }
     return $me->dbh unless $me->{rdbh};
-    return $me->{rdbh} if $me->{rdbh}->ping;
-    $me->{rdbh} = $me->_connect($me->{ConnectReadOnlyArgs});
+    $me->_auto_reconnect('read-only');
 }
 
 =head3 C<config>
@@ -476,28 +507,31 @@ sub rdbh {
   $dbo_setting = $dbo->config($option);
   $dbo->config($option => $dbo_setting);
 
-Get or set the global or C<DBIx::DBO> config settings.
-When setting an option, the previous value is returned.
+Get or set the global or C<DBIx::DBO> config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the global value is returned.
 
-Options include:
+=head2 Available C<config> options
 
 =over
 
 =item C<QuoteIdentifier>
 
 Boolean setting to control quoting of SQL identifiers (schema, table and column names).
-Defaults to C<1>.
 
-=item C<_Debug_SQL>
+=item C<UseHandle>
 
-Set to C<1> or C<2> to warn about each SQL command executed. C<2> adds a full stack trace.
+Set to C<'read-write'> or C<'read-only'> to force using only that handle for all operations.
+Defaults to C<undef> which chooses the I<read-only> handle for reads and the I<read-write> handle otherwise.
+
+=item C<DebugSQL>
+
+Set to C<1> or C<2> to warn about each SQL command executed.  C<2> adds a full stack trace.
 Defaults to C<0> (silent).
 
 =back
 
 Global options can also be set when C<use>'ing the module:
 
-  use DBIx::DBO QuoteIdentifier => 0, _Debug_SQL => 1;
+  use DBIx::DBO QuoteIdentifier => 0, DebugSQL => 1;
 
 =cut
 
@@ -505,13 +539,11 @@ sub config {
     my $me = shift;
     my $opt = shift;
     unless (blessed $me) {
-        my $val = $Config{$opt};
-        $Config{$opt} = shift if @_;
-        return $val;
+        return DBIx::DBO::Common->_set_config(\%Config, $opt, shift) if @_;
+        return $Config{$opt};
     }
-    my $val = defined $me->{Config}{$opt} ? $me->{Config}{$opt} : $Config{$opt};
-    $me->{Config}{$opt} = shift if @_;
-    return $val;
+    return $me->_set_config($me->{Config}, $opt, shift) if @_;
+    return defined $me->{Config}{$opt} ? $me->{Config}{$opt} : $Config{$opt};
 }
 
 sub DESTROY {

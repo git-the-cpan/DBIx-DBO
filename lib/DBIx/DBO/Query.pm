@@ -34,17 +34,35 @@ DBIx::DBO::Query - An OO interface to SQL queries and results.  Encapsulates an 
   $query->where($table1 ** 'age', '<', 20, FORCE => 'OR'); # Force OR so that we get: (age < 20 OR age > 30)
   $query->where($table1 ** 'age', '>', 30, FORCE => 'OR'); # instead of the default: (age < 20 AND age > 30)
 
+=head1 DESCRIPTION
+
+A C<Query> object represents rows from a database (from one or more tables). This module makes it easy, not only to fetch and use the data in the returned rows, but also to modify the query to return a different result set.
+
+=head1 SUBCLASSING
+
+When subclassing C<DBIx::DBO::Query>, please note that C<Query> objects created with the L</new> method are blessed into a DBD driver specific module. For example if using MySQL, a new C<Query> object will be blessed into C<DBIx::DBO::Query::DBD::mysql> which inherits from C<DBIx::DBO::Query>.  However if objects are created from a subclass called C<MySubClass> the new object will be blessed into C<MySubClass::DBD::mysql> which will inherit from both C<MySubClass> and C<DBIx::DBO::Query::DBD::mysql>.
+
+For this reason it's advisable that L<MRO::Compat|MRO::Compat> is installed if the perl version you are using is less than 5.9.5 as this module will try to ensure that the 'C3' method resolution order is used.
+
 =head1 METHODS
+
+=head3 C<new>
+
+  DBIx::DBO::Query->new($dbo, $table1, ...);
+
+Create a new C<Query> object from the tables specified.
+In scalar context, just the C<Query> object will be returned.
+In list context, the C<Query> object and L<DBIx::DBO::Table|DBIx::DBO::Table> objects will be returned for each table specified.
 
 =cut
 
-sub _new {
+sub new {
     my $proto = shift;
     my $class = ref($proto) || $proto;
     my $me = { DBO => shift, sql => undef };
     blessed $me->{DBO} and $me->{DBO}->isa('DBIx::DBO') or ouch 'Invalid DBO Object';
     ouch 'No table specified in new Query' unless @_;
-    bless $me, $class;
+    bless $me, $me->{DBO}->_create_dbd_class($class, __PACKAGE__);
 
     for my $table (@_) {
         $me->join_table($table);
@@ -59,7 +77,7 @@ sub _new {
 
 Reset the query, start over with a clean slate.
 
-NB. This will not remove the JOINs or JOIN ON clauses.
+B<NB>: This will not remove the JOINs or JOIN ON clauses.
 
 =cut
 
@@ -133,7 +151,7 @@ sub show {
 Join a table onto the query, creating a L<DBIx::DBO::Table|DBIx::DBO::Table> object if needed.
 This will perform a comma (", ") join unless $join_type is specified.
 
-Valid join types are any accepted by the DB. Eg: C<'JOIN'>, C<'LEFT'>, C<'RIGHT'>, C<undef> (for comma join), C<'INNER'>, C<'OUTER'>, ...
+Valid join types are any accepted by the DB.  Eg: C<'JOIN'>, C<'LEFT'>, C<'RIGHT'>, C<undef> (for comma join), C<'INNER'>, C<'OUTER'>, ...
 
 Returns the C<Table> object.
 
@@ -280,16 +298,17 @@ C<AS> => An alias name.
 C<FUNC> => A string to be inserted into the SQL, possibly containing "?" placeholders.
 
 =item *
-C<ORDER> => To order by a column. (Used only in C<group_by> and C<order_by>)
+C<ORDER> => To order by a column (Used only in C<group_by> and C<order_by>).
 
 =back
 
-Multiple C<where> expressions are combined I<cleverly> using the preferred aggregator C<'AND'> (unless L<open_bracket|/open_bracket__close_bracket> was used to change this). So that when you add where expressions to the query, they will be C<'AND'>ed together. However some expressions will automatically be C<'OR'>ed instead where this makes sense, Eg:
+Multiple C<where> expressions are combined I<cleverly> using the preferred aggregator C<'AND'> (unless L<open_bracket|/open_bracket__close_bracket> was used to change this).  So that when you add where expressions to the query, they will be C<AND>ed together.  However some expressions that refer to the same caloumn will automatically be C<OR>ed instead where this makes sense, currently: C<'='>, C<'IS NULL'>, C<E<lt>=E<gt>>, C<IN> and C<'BETWEEN'>.  Similarly, when the preferred aggregator is C<'OR'> the following operators will be C<AND>ed together: C<'!='>, C<'IS NOT NULL'>, C<E<lt>E<gt>>, C<NOT IN> and C<'NOT BETWEEN'>.
 
   $query->where('id', '=', 5);
+  $query->where('name', '=', 'Bob');
   $query->where('id', '=', 7);
   $query->where(...
-  # Produces: WHERE ("id" = 5 OR "id" = 7) AND ...
+  # Produces: WHERE ("id" = 5 OR "id" = 7) AND "name" = 'Bob' AND ...
 
 =cut
 
@@ -325,7 +344,6 @@ sub where {
 
   $query->unwhere();
   $query->unwhere($column);
-  $query->unwhere($table1 ** 'id');
 
 Removes all previously added where() restrictions for a column.
 If no column is provided, ALL where() restrictions are removed.
@@ -591,7 +609,7 @@ sub col_arrayref {
     my $me = shift;
     my $attr = shift;
     $me->_sql($me->sql, $me->_bind_params_select($me->{build_data}));
-    my $sth = $me->rdbh->prepare($me->{sql}) or return;
+    my $sth = $me->rdbh->prepare($me->{sql}, $attr) or return;
     unless (defined $attr->{Columns}) {
         # Some drivers don't provide $sth->{NUM_OF_FIELDS} until after execute is called
         if ($sth->{NUM_OF_FIELDS}) {
@@ -852,16 +870,17 @@ This provides access to L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using th
   $query_setting = $dbo->config($option);
   $dbo->config($option => $query_setting);
 
-Get or set this C<Query> object's config settings.  When setting an option, the previous value is returned.
+Get or set this C<Query> object's config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the L<DBIx::DBO|DBIx::DBO>'s value is returned.
+
+See L<DBIx::DBO/available_config_options>.
 
 =cut
 
 sub config {
     my $me = shift;
     my $opt = shift;
-    my $val = defined $me->{Config}{$opt} ? $me->{Config}{$opt} : $me->{DBO}->config($opt);
-    $me->{Config}{$opt} = shift if @_;
-    return $val;
+    return $me->_set_config($me->{Config} ||= {}, $opt, shift) if @_;
+    return defined $me->{Config}{$opt} ? $me->{Config}{$opt} : $me->{DBO}->config($opt);
 }
 
 sub DESTROY {
@@ -878,13 +897,7 @@ __END__
 
 =item *
 
-Better explanation of subclassing, to create easy to use query objects.
-
-=item *
-
-Better explanation of how to construct complex queries.
-
-This module is currently still in development (including the documentation), but I will be adding to/completing it in the near future.
+Better explanation of how to construct complex queries.  This module is currently still in development (including the documentation), but I will be adding to/completing it in the near future.
 
 =item *
 

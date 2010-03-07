@@ -31,20 +31,27 @@ DBIx::DBO::Row - An OO interface to SQL queries and results.  Encapsulates a fet
 
 =head1 METHODS
 
+=head3 C<new>
+
+  DBIx::DBO::Row->new($dbo, $table_object);
+  DBIx::DBO::Row->new($dbo, $query_object);
+
+Create and return a new C<Row> object.
+
 =cut
 
 sub dbh { ${$_[0]}->{DBO}->dbh }
 sub rdbh { ${$_[0]}->{DBO}->rdbh }
 
-sub _new {
+sub new {
     my $proto = shift;
     my $class = ref($proto) || $proto;
     my $me = \{ DBO => shift, Parent => shift, array => undef, hash => {} };
     blessed $$me->{DBO} and $$me->{DBO}->isa('DBIx::DBO') or ouch 'Invalid DBO Object';
     ouch 'Invalid Parent Object' unless defined $$me->{Parent};
     $$me->{Parent} = $$me->{DBO}->table($$me->{Parent}) unless blessed $$me->{Parent};
-    _init($me);
-    bless $me, $class;
+    bless $me, $$me->{DBO}->_create_dbd_class($class, __PACKAGE__);
+    $me->_init;
     return wantarray ? ($me, $me->tables) : $me;
 }
 
@@ -53,7 +60,7 @@ sub _init {
     $$me->{build_data}{LimitOffset} = [1];
     if ($$me->{Parent}->isa('DBIx::DBO::Query')) {
         $$me->{Tables} = [ @{$$me->{Parent}{Tables}} ];
-        _copy_build_data($me);
+        $me->_copy_build_data;
         # We must weaken this to avoid a circular reference
         weaken $$me->{Parent};
     } elsif ($$me->{Parent}->isa('DBIx::DBO::Table')) {
@@ -292,18 +299,18 @@ This provides access to the L<DBI-E<gt>do|DBI/"do"> method.  It defaults to usin
   $row_setting = $dbo->config($option);
   $dbo->config($option => $row_setting);
 
-Get or set the L<DBIx::DBO::Row|DBIx::DBO::Row> config settings.
-When setting an option, the previous value is returned.
+Get or set the C<Row> config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the C<Query> object (If the the C<Row> belongs to one) or L<DBIx::DBO|DBIx::DBO>'s value is returned.
+
+See L<DBIx::DBO/available_config_options>.
 
 =cut
 
 sub config {
     my $me = shift;
     my $opt = shift;
-    my $val = defined $$me->{Config}{$opt} ? $$me->{Config}{$opt} :
+    return $me->_set_config($$me->{Config} ||= {}, $opt, shift) if @_;
+    return defined $$me->{Config}{$opt} ? $$me->{Config}{$opt} :
         (defined $$me->{Parent} ? $$me->{Parent} : $$me->{DBO})->config($opt);
-    $$me->{Config}{$opt} = shift if @_;
-    return $val;
 }
 
 sub DESTROY {

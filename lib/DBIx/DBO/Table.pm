@@ -29,19 +29,29 @@ DBIx::DBO::Table - An OO interface to SQL queries and results.  Encapsulates a t
 
 =head1 METHODS
 
+=head3 C<new>
+
+  DBIx::DBO::Table->new($dbo, $table);
+  DBIx::DBO::Table->new($dbo, [$schema, $table]);
+  DBIx::DBO::Table->new($dbo, $table_object);
+
+Create and return a new C<Table> object.
+Tables can be specified by their name or an arrayref of schema and table name or another C<Table> object.
+
 =cut
 
-sub _new {
+sub new {
     my ($proto, $dbo, $table) = @_;
     my $class = ref($proto) || $proto;
     blessed $dbo and $dbo->isa('DBIx::DBO') or ouch 'Invalid DBO Object';
     (my $schema, $table, $_) = $dbo->table_info($table) or ouch 'No such table: '.$table;
+    $class = $dbo->_create_dbd_class($class, __PACKAGE__);
     bless { %$_, Schema => $schema, Name => $table, DBO => $dbo, LastInsertID => undef }, $class;
 }
 
 =head3 C<tables>
 
-Return a list of L<DBIx::DBO::Table|DBIx::DBO::Table> objects, which will always be this C<Table> object.
+Return a list of C<Table> objects, which will always be this C<Table> object.
 
 =cut
 
@@ -219,17 +229,17 @@ This provides access to L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using th
   $table_setting = $table->config($option);
   $table->config($option => $table_setting);
 
-Get or set the C<Table> config settings.
-When setting an option, the previous value is returned.
+Get or set the C<Table> config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the L<DBIx::DBO|DBIx::DBO>'s value is returned.
+
+See L<DBIx::DBO/available_config_options>.
 
 =cut
 
 sub config {
     my $me = shift;
     my $opt = shift;
-    my $val = defined $me->{Config}{$opt} ? $me->{Config}{$opt} : $me->{DBO}->config($opt);
-    $me->{Config}{$opt} = shift if @_;
-    return $val;
+    return $me->_set_config($me->{Config} ||= {}, $opt, shift) if @_;
+    return defined $me->{Config}{$opt} ? $me->{Config}{$opt} : $me->{DBO}->config($opt);
 }
 
 sub DESTROY {
