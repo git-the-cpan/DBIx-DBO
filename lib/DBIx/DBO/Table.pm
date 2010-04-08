@@ -6,6 +6,8 @@ use warnings;
 
 use overload '**' => \&column, fallback => 1;
 
+our @ISA;
+
 =head1 NAME
 
 DBIx::DBO::Table - An OO interface to SQL queries and results.  Encapsulates a table in an object.
@@ -14,16 +16,16 @@ DBIx::DBO::Table - An OO interface to SQL queries and results.  Encapsulates a t
 
   # Create a Table object
   my $table = $dbo->table('my_table');
-
+  
   # Get a column reference
   my $column = $table ** 'employee_id';
-
+  
   # Quickly display my employee id
   print $table->fetch_value('employee_id', name => 'Vernon');
-
+  
   # Insert a new row into the table
   $table->insert(employee_id => 007, name => 'James Bond');
-
+  
   # Remove rows from the table where the name IS NULL
   $table->delete(name => undef);
 
@@ -45,8 +47,18 @@ sub new {
     my $class = ref($proto) || $proto;
     blessed $dbo and $dbo->isa('DBIx::DBO') or ouch 'Invalid DBO Object';
     (my $schema, $table, $_) = $dbo->table_info($table) or ouch 'No such table: '.$table;
-    $class = $dbo->_create_dbd_class($class, __PACKAGE__);
+    $class = $class->_create_dbd_class($dbo->{dbd});
     bless { %$_, Schema => $schema, Name => $table, DBO => $dbo, LastInsertID => undef }, $class;
+}
+
+*_create_dbd_class = \&DBIx::DBO::Common::_create_dbd_class;
+
+sub _set_dbd_inheritance {
+    my $class = shift;
+    my $dbd = shift;
+    # Let DBIx::DBO::Table secretly inherit from DBIx::DBO::Common
+    @_ = (@ISA, 'DBIx::DBO::Common') if not @_ and $class eq __PACKAGE__;
+    $class->DBIx::DBO::Common::_set_dbd_inheritance($dbd, @_);
 }
 
 =head3 C<tables>
@@ -83,7 +95,7 @@ sub column {
     my ($me, $col) = @_;
     ouch 'Invalid column '.$me->_qi($col).' in table '.$me->_quoted_name
         unless exists $me->{Column_Idx}{$col};
-    defined $me->{Column}{$col} ? $me->{Column}{$col} : ($me->{Column}{$col} = bless [$me, $col], 'DBIx::DBO::Column');
+    $me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column';
 }
 
 =head3 C<fetch_row>
@@ -231,7 +243,7 @@ This provides access to L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using th
 
 Get or set the C<Table> config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the L<DBIx::DBO|DBIx::DBO>'s value is returned.
 
-See L<DBIx::DBO/available_config_options>.
+See L<DBIx::DBO/Available_config_options>.
 
 =cut
 
@@ -249,6 +261,16 @@ sub DESTROY {
 1;
 
 __END__
+
+=head1 TODO LIST
+
+=over 4
+
+=item *
+
+Add a multi_insert method for extended INSERTs.
+
+=back
 
 =head1 SEE ALSO
 

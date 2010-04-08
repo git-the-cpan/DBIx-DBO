@@ -8,6 +8,8 @@ use warnings;
 use overload '@{}' => sub {${$_[0]}->{array} || []}, '%{}' => sub {${$_[0]}->{hash}};
 use overload '**' => \&value, fallback => 1;
 
+our @ISA;
+
 =head1 NAME
 
 DBIx::DBO::Row - An OO interface to SQL queries and results.  Encapsulates a fetched row of data in an object.
@@ -16,16 +18,16 @@ DBIx::DBO::Row - An OO interface to SQL queries and results.  Encapsulates a fet
 
   # Create a Row object for the `users` table
   my $row = $dbo->row('users');
-
+  
   # Load my record
   $row->load(login => 'vlyon') or die "Where am I?";
-
+  
   # Double my salary :)
   $row->update(salary => {FUNC => '? * 2', COL => 'salary'});
-
+  
   # Print my email address
   print $row ** 'email';  # Short for: $row->value('email')
-
+  
   # Delete my boss
   $row->load(id => $row ** boss_id)->delete or die "Can't kill the boss";
 
@@ -50,9 +52,20 @@ sub new {
     blessed $$me->{DBO} and $$me->{DBO}->isa('DBIx::DBO') or ouch 'Invalid DBO Object';
     ouch 'Invalid Parent Object' unless defined $$me->{Parent};
     $$me->{Parent} = $$me->{DBO}->table($$me->{Parent}) unless blessed $$me->{Parent};
-    bless $me, $$me->{DBO}->_create_dbd_class($class, __PACKAGE__);
+    bless $me, $class->_create_dbd_class($$me->{DBO}{dbd});
+    Class::C3::initialize() if $DBIx::DBO::need_c3_initialize;
     $me->_init;
     return wantarray ? ($me, $me->tables) : $me;
+}
+
+*_create_dbd_class = \&DBIx::DBO::Common::_create_dbd_class;
+
+sub _set_dbd_inheritance {
+    my $class = shift;
+    my $dbd = shift;
+    # Let DBIx::DBO::Row secretly inherit from DBIx::DBO::Common
+    @_ = (@ISA, 'DBIx::DBO::Common') if not @_ and $class eq __PACKAGE__;
+    $class->DBIx::DBO::Common::_set_dbd_inheritance($dbd, @_);
 }
 
 sub _init {
@@ -129,6 +142,29 @@ sub _column_idx {
     return;
 }
 
+=head3 C<column>
+
+  $query->column($column_name);
+  $query->column($column_or_alias_name, 1);
+
+Returns a reference to a column for use with other methods.
+
+=cut
+
+sub column {
+    my ($me, $col, $_check_aliases) = @_;
+    if ($_check_aliases) {
+        for my $fld (@{$$me->{build_data}{Showing}}) {
+            return $$me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column'
+                if !blessed $fld and exists $fld->[2]{AS} and $col eq $fld->[2]{AS};
+        }
+    }
+    for my $tbl ($me->tables) {
+        return $tbl->column($col) if exists $tbl->{Column_Idx}{$col};
+    }
+    ouch 'No such column'.($_check_aliases ? '/alias' : '').': '.$me->_qi($col);
+}
+
 =head3 C<value>
 
   $value = $row->value($column);
@@ -173,7 +209,7 @@ sub load {
 
     $me->_detach;
 
-    # TODO: Shouldn't this replace the Quick_Where?
+    # Use Quick_Where to load a row, but make sure to restore its value afterward
     my $old_qw = $#{$$me->{build_data}{Quick_Where}};
     push @{$$me->{build_data}{Quick_Where}}, @_;
     undef $$me->{build_data}{where};
@@ -201,7 +237,10 @@ sub _detach {
         $$me->{array} = [ @$me ];
         $$me->{hash} = { %$me };
         undef $$me->{Parent}{Row};
-        # TODO: Save configs from Parent
+        # Save config from Parent
+        if ($$me->{Parent}{Config} and %{$$me->{Parent}{Config}}) {
+            $$me->{Config} = { %{$$me->{Parent}{Config}}, $$me->{Config} ? %{$$me->{Config}} : () };
+        }
     }
     undef $$me->{Parent};
 }
@@ -227,11 +266,17 @@ sub update {
     $build_data->{LimitOffset} = [1] if $me->config('LimitRowUpdate') and $me->tables == 1;
     my $sql = $me->_build_sql_update($build_data, @_);
 
+    my $rv = $me->do($sql, undef, $me->_bind_params_update($build_data));
+    $me->_reset_on_update($build_data, @_) if $rv and $rv > 0;
+    return $rv;
+}
+
+sub _reset_on_update {
+    my $me = shift;
     # TODO: Reload/update instead of leaving the row empty?
     # To update the Row object is difficult because columns may have been aliased
     undef $$me->{array};
     undef %$me;
-    $me->do($sql, undef, $me->_bind_params_update($build_data));
 }
 
 =head3 C<delete>
@@ -262,13 +307,17 @@ sub delete {
 sub _build_data_matching_this_row {
     my $me = shift;
     # Identify the row by the PrimaryKeys if any, otherwise by all Columns
-    my @cols;
+    my @quick_where;
     for my $tbl (@{$$me->{Tables}}) {
-        push @cols, map $tbl ** $_, @{$tbl->{ @{$tbl->{PrimaryKeys}} ? 'PrimaryKeys' : 'Columns' }};
+        for my $col (map $tbl ** $_, @{$tbl->{ @{$tbl->{PrimaryKeys}} ? 'PrimaryKeys' : 'Columns' }}) {
+            my $i = $me->_column_idx($col);
+            defined $i or ouch 'The '.$me->_qi($tbl->{Name}, $col->[1]).' field needed to identify this row, was not included in this query';
+            push @quick_where, $col => $$me->{array}[$i];
+        }
     }
     my %h = (
         from => $$me->{build_data}{from},
-        Quick_Where => [ map {$_ => $me->value($_)} @cols ]
+        Quick_Where => \@quick_where
     );
     $h{From_Bind} = $$me->{build_data}{From_Bind} if exists $$me->{build_data}{From_Bind};
     return \%h;
@@ -301,7 +350,7 @@ This provides access to the L<DBI-E<gt>do|DBI/"do"> method.  It defaults to usin
 
 Get or set the C<Row> config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the C<Query> object (If the the C<Row> belongs to one) or L<DBIx::DBO|DBIx::DBO>'s value is returned.
 
-See L<DBIx::DBO/available_config_options>.
+See L<DBIx::DBO/Available_config_options>.
 
 =cut
 

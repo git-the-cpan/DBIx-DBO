@@ -31,7 +31,7 @@ BEGIN {
         diag "DBO_DEBUG_SQL=$ENV{DBO_DEBUG_SQL}";
         package DBIx::DBO::Common;
 
-        $DBIx::DBO::Common::Config{DebugSQL} = $ENV{DBO_DEBUG_SQL};
+        DBIx::DBO->config(DebugSQL => $ENV{DBO_DEBUG_SQL});
         no warnings 'redefine';
         *DBIx::DBO::Common::_carp_last_sql = sub {
             my $me = shift;
@@ -54,7 +54,7 @@ our @_cleanup_sql;
 
 sub import {
     my $class = shift;
-    $dbd = shift;
+    $dbd = shift or return;
     $dbd_name = shift;
     my %opt = splice @_;
 
@@ -140,7 +140,8 @@ sub try_to_connect {
     my $dbo_ref = shift;
     my @env = map $ENV{"DBO_TEST_\U$dbd\E_$_"}, qw(DSN USER PASS);
     if (grep defined, @env) {
-        return $$dbo_ref = connect_dbo(@env);
+        return $$dbo_ref if $$dbo_ref = connect_dbo(@env);
+        plan skip_all => "Can't connect: $DBI::errstr";
     }
     return undef;
 }
@@ -388,7 +389,7 @@ sub advanced_query_methods {
     $case_sensitive = $case_sensitive->[0];
     note "$dbd_name 'LIKE' is".($case_sensitive ? '' : ' NOT').' case sensitive';
 
-    # Where clause
+    # WHERE clause
     $q->show('id');
     ok $q->where('name', 'LIKE', '%a%'), 'Method DBIx::DBO::Query->where LIKE';
     my $a = $q->col_arrayref or diag sql_err($q);
@@ -399,6 +400,10 @@ sub advanced_query_methods {
     ok $q->where('name', 'NOT LIKE', '%i%'), 'Method DBIx::DBO::Query->where NOT LIKE';
     $a = $q->hashref('id') or diag sql_err($q);
     is_deeply $a, {4 => {id => 4},6 => {id => 6}}, 'Method DBIx::DBO::Query->hashref';
+
+    # HAVING clause
+    $q->show('id', 'name', { FUNC => 'CONCAT(?, ?)', COL => [qw(id name)], AS => 'combo'});
+    ok $q->having('combo', '=', '4James Bond'), 'Method DBIx::DBO::Query->having';
 
     $q->finish;
 }

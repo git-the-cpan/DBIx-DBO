@@ -5,6 +5,8 @@ use Devel::Peek 'SvREFCNT';
 use strict;
 use warnings;
 
+our @ISA;
+
 =head1 NAME
 
 DBIx::DBO::Query - An OO interface to SQL queries and results.  Encapsulates an entire query in an object.
@@ -13,23 +15,23 @@ DBIx::DBO::Query - An OO interface to SQL queries and results.  Encapsulates an 
 
   # Create a Query object by JOINing 2 tables
   my $query = $dbo->query('my_table', 'my_other_table');
-
+  
   # Get the Table objects from the query
   my ($table1, $table2) = $query->tables;
-
+  
   # Add a JOIN ON clause
   $query->join_on($table1 ** 'login', '=', $table2 ** 'username');
-
+  
   # Find our ancestors, and order by age (oldest first)
   $query->where('name', '=', 'Adam');
   $query->where('name', '=', 'Eve');
   $query->order_by({ COL => 'age', ORDER => 'DESC' });
-
+  
   # New Query using a LEFT JOIN
   ($query, $table1) = $dbo->query('my_table');
   $table2 = $query->join_table('another_table', 'LEFT');
   $query->join_on($table1 ** 'parent_id', '=', $table2 ** 'child_id');
-
+  
   # Find those not aged between 20 and 30.
   $query->where($table1 ** 'age', '<', 20, FORCE => 'OR'); # Force OR so that we get: (age < 20 OR age > 30)
   $query->where($table1 ** 'age', '>', 30, FORCE => 'OR'); # instead of the default: (age < 20 AND age > 30)
@@ -62,13 +64,23 @@ sub new {
     my $me = { DBO => shift, sql => undef };
     blessed $me->{DBO} and $me->{DBO}->isa('DBIx::DBO') or ouch 'Invalid DBO Object';
     ouch 'No table specified in new Query' unless @_;
-    bless $me, $me->{DBO}->_create_dbd_class($class, __PACKAGE__);
+    bless $me, $class->_create_dbd_class($me->{DBO}{dbd});
 
     for my $table (@_) {
         $me->join_table($table);
     }
     $me->reset;
     return wantarray ? ($me, $me->tables) : $me;
+}
+
+*_create_dbd_class = \&DBIx::DBO::Common::_create_dbd_class;
+
+sub _set_dbd_inheritance {
+    my $class = shift;
+    my $dbd = shift;
+    # Let DBIx::DBO::Query secretly inherit from DBIx::DBO::Common
+    @_ = (@ISA, 'DBIx::DBO::Common') if not @_ and $class eq __PACKAGE__;
+    $class->DBIx::DBO::Common::_set_dbd_inheritance($dbd, @_);
 }
 
 =head3 C<reset>
@@ -112,23 +124,50 @@ sub _table_idx {
 
 sub _table_alias {
     my ($me, $tbl) = @_;
+    return undef if $me == $tbl; # This means it's checking for an aliased column
     my $i = $me->_table_idx($tbl);
     ouch 'The table is not in this query' unless defined $i;
-    @{$me->{Tables}} > 1 ? 't'.($i + 1) : ();
+    # TODO: Use table aliases, when there's more than 1 table or column aliases are used
+    @{$me->{Tables}} > 1 || @{$me->{build_data}{Showing}} ? 't'.($i + 1) : ();
+}
+
+=head3 C<column>
+
+  $query->column($column_name);
+  $query->column($column_or_alias_name, 1);
+
+Returns a reference to a column for use with other methods.
+
+=cut
+
+sub column {
+    my ($me, $col, $_check_aliases) = @_;
+    if ($_check_aliases) {
+        for my $fld (@{$me->{build_data}{Showing}}) {
+            return $me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column'
+                if !blessed $fld and exists $fld->[2]{AS} and $col eq $fld->[2]{AS};
+        }
+    }
+    for my $tbl ($me->tables) {
+        return $tbl->column($col) if exists $tbl->{Column_Idx}{$col};
+    }
+    ouch 'No such column'.($_check_aliases ? '/alias' : '').': '.$me->_qi($col);
 }
 
 =head3 C<show>
 
   $query->show(@columns);
-  $query->show($table1 ** 'id', {FUNC => 'UCASE(?)', COL => 'name', AS => 'NAME'}, ...
+  $query->show($table1 ** 'id', {FUNC => 'UCASE(?)', COL => 'name', AS => 'alias'}, ...
 
 Specify which columns to show as an array.  If the array is empty all columns will be shown.
 
 =cut
 
+# TODO: Keep track of all aliases in use and die if a used alias is removed
 sub show {
     my $me = shift;
     undef $me->{sql};
+    undef $me->{build_data}{from};
     undef $me->{build_data}{show};
     undef @{$me->{build_data}{Showing}};
     for my $fld (@_) {
@@ -259,18 +298,23 @@ C<$expression>s can be any of the following:
 =over 4
 
 =item *
+
 A scalar value: C<123> or C<'hello'> (or for C<$expression1> a column name: C<'id'>)
 
 =item *
+
 A scalar reference: C<\"22 * 3">  (These are passed unquoted in the SQL statement!)
 
 =item *
+
 An array reference: C<[1, 3, 5]>  (Used with C<IN> and C<BETWEEN> etc)
 
 =item *
-A Column object: C<$table ** 'id'> or C<$table->column('id')>
+
+A Column object: C<$table ** 'id'> or C<$table-E<gt>column('id')>
 
 =item *
+
 A hash reference: (Described below)
 
 =back
@@ -286,23 +330,28 @@ The keys to the hash in a complex expression are:
 =over 4
 
 =item *
+
 C<VAL> => A scalar, scalar reference or an array reference.
 
 =item *
+
 C<COL> => The name of a column or a Column object.
 
 =item *
+
 C<AS> => An alias name.
 
 =item *
+
 C<FUNC> => A string to be inserted into the SQL, possibly containing "?" placeholders.
 
 =item *
+
 C<ORDER> => To order by a column (Used only in C<group_by> and C<order_by>).
 
 =back
 
-Multiple C<where> expressions are combined I<cleverly> using the preferred aggregator C<'AND'> (unless L<open_bracket|/open_bracket__close_bracket> was used to change this).  So that when you add where expressions to the query, they will be C<AND>ed together.  However some expressions that refer to the same caloumn will automatically be C<OR>ed instead where this makes sense, currently: C<'='>, C<'IS NULL'>, C<E<lt>=E<gt>>, C<IN> and C<'BETWEEN'>.  Similarly, when the preferred aggregator is C<'OR'> the following operators will be C<AND>ed together: C<'!='>, C<'IS NOT NULL'>, C<E<lt>E<gt>>, C<NOT IN> and C<'NOT BETWEEN'>.
+Multiple C<where> expressions are combined I<cleverly> using the preferred aggregator C<'AND'> (unless L<open_bracket|/open_bracket__close_bracket> was used to change this).  So that when you add where expressions to the query, they will be C<AND>ed together.  However some expressions that refer to the same column will automatically be C<OR>ed instead where this makes sense, currently: C<'='>, C<'IS NULL'>, C<E<lt>=E<gt>>, C<IN> and C<'BETWEEN'>.  Similarly, when the preferred aggregator is C<'OR'> the following operators will be C<AND>ed together: C<'!='>, C<'IS NOT NULL'>, C<E<lt>E<gt>>, C<NOT IN> and C<'NOT BETWEEN'>.
 
   $query->where('id', '=', 5);
   $query->where('name', '=', 'Bob');
@@ -345,21 +394,26 @@ sub where {
   $query->unwhere();
   $query->unwhere($column);
 
-Removes all previously added where() restrictions for a column.
-If no column is provided, ALL where() restrictions are removed.
+Removes all previously added L</where> restrictions for a column.
+If no column is provided, the I<whole> WHERE clause is removed.
 
 =cut
 
 sub unwhere {
     my $me = shift;
-    my $col = shift;
+    $me->_del_where('Where', @_);
+}
+
+sub _del_where {
+    my $me = shift;
+    my $clause = shift;
     # TODO: Remove a condition by specifying the whole condition
-    if ($col) {
+    if (my $col = shift) {
         ouch 'Invalid column' unless blessed $col and $col->isa('DBIx::DBO::Column');
-        if (exists $me->{build_data}{Where_Data}) {
+        if (exists $me->{build_data}{$clause.'_Data'}) {
             # Find the current Where_Data reference
-            my $ref = $me->{build_data}{Where_Data};
-            $ref = $ref->[$_] for (@{$me->{Where_Bracket_Refs}});
+            my $ref = $me->{build_data}{$clause.'_Data'};
+            $ref = $ref->[$_] for (@{$me->{$clause.'_Bracket_Refs'}});
 
             for (my $i = $#$ref; $i >= 0; $i--) {
                 # Remove this Where piece if there is no FUNC and it refers to this column only
@@ -368,13 +422,13 @@ sub unwhere {
             }
         }
     } else {
-        delete $me->{build_data}{Where_Data};
-        $me->{Where_Bracket_Refs} = [];
-        $me->{Where_Brackets} = [];
+        delete $me->{build_data}{$clause.'_Data'};
+        $me->{$clause.'_Bracket_Refs'} = [];
+        $me->{$clause.'_Brackets'} = [];
     }
     # This forces a new search
     undef $me->{sql};
-    undef $me->{build_data}{where};
+    undef $me->{build_data}{lc $clause};
 }
 
 ##
@@ -517,6 +571,57 @@ sub group_by {
         my @group = $me->_parse_col_val($col, Aliases => 1);
         push @{$me->{build_data}{GroupBy}}, \@group;
     }
+}
+
+=head3 C<having>
+
+Restrict the query with the condition specified (HAVING clause).  This takes the same arguments as L</where>.
+
+  $query->having($expression1, $operator, $expression2);
+
+=cut
+
+sub having {
+    my $me = shift;
+
+    # If the $fld is just a scalar use it as a column name not a value
+    my ($fld, $fld_func, $fld_opt) = $me->_parse_col_val(shift, Aliases => 1);
+    my $op = shift;
+    my ($val, $val_func, $val_opt) = $me->_parse_val(shift, Check => 'Auto');
+
+    # Validate the fields
+    for my $f (@$fld, @$val) {
+        if (blessed $f and $f->isa('DBIx::DBO::Column')) {
+            ouch 'Invalid table field' unless defined $me->_table_idx($f->[0]) or $f->[0] eq $me;
+        } elsif (my $type = ref $f) {
+            ouch 'Invalid value type: '.$type;
+        }
+    }
+
+    # Force a new search
+    undef $me->{sql};
+    undef $me->{build_data}{having};
+
+    # Find the current Having_Data reference
+    my $ref = $me->{build_data}{Having_Data} ||= [];
+    $ref = $ref->[$_] for (@{$me->{Having_Bracket_Refs}});
+
+    $me->_add_where($ref, $op, $fld, $fld_func, $fld_opt, $val, $val_func, $val_opt, @_);
+}
+
+=head3 C<unhaving>
+
+  $query->unhaving();
+  $query->unhaving($column);
+
+Removes all previously added L</having> restrictions for a column.
+If no column is provided, the I<whole> HAVING clause is removed.
+
+=cut
+
+sub unhaving {
+    my $me = shift;
+    $me->_del_where('Having', @_);
 }
 
 =head3 C<order_by>
@@ -669,7 +774,7 @@ Returns the L<DBIx::DBO::Row|DBIx::DBO::Row> object for the current row from the
 
 sub row {
     my $me = shift;
-    $me->sql; # Detach if needed
+    $me->sql; # Build the SQL and detach the Row if needed
     $me->{Row} ||= $me->{DBO}->row($me);
 }
 
@@ -684,9 +789,11 @@ This is called automatically before fetching the first row.
 
 sub run {
     my $me = shift;
-    my $row = $me->row;
-    undef $$row->{array};
-    undef %$row;
+    $me->sql; # Build the SQL and detach the Row if needed
+    if (defined $me->{Row}) {
+        undef ${$me->{Row}}{array};
+        undef %{$me->{Row}};
+    }
 
     my $rv = $me->_execute or return undef;
     $me->_bind_cols_to_hash;
@@ -872,7 +979,7 @@ This provides access to L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using th
 
 Get or set this C<Query> object's config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the L<DBIx::DBO|DBIx::DBO>'s value is returned.
 
-See L<DBIx::DBO/available_config_options>.
+See L<DBIx::DBO/Available_config_options>.
 
 =cut
 
@@ -893,11 +1000,15 @@ __END__
 
 =head1 TODO LIST
 
-=over
+=over 4
 
 =item *
 
 Better explanation of how to construct complex queries.  This module is currently still in development (including the documentation), but I will be adding to/completing it in the near future.
+
+=item *
+
+Improve the L</unwhere> & L</unhaving> methods.  Currently they have very limited use.
 
 =item *
 

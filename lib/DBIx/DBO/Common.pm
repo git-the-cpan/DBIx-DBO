@@ -41,7 +41,7 @@ sub _qi {
     my $me = shift;
     return $me->dbh->quote_identifier(@_) if $me->config('QuoteIdentifier');
     # Strip off any null/undef elements (ie schema)
-    shift while @_ and !defined $_[0];
+    shift while @_ and not (defined $_[0] and length $_[0]);
     join '.', @_;
 }
 
@@ -81,6 +81,7 @@ sub _build_sql_select {
     $sql .= ' FROM '.$me->_build_from($h);
     $sql .= ' WHERE '.$_ if $_ = $me->_build_where($h);
     $sql .= ' GROUP BY '.$_ if $_ = $me->_build_group($h);
+    $sql .= ' HAVING '.$_ if $_ = $me->_build_having($h);
     $sql .= ' ORDER BY '.$_ if $_ = $me->_build_order($h);
     $sql .= ' '.$_ if $_ = $me->_build_limit($h);
     $sql;
@@ -91,7 +92,7 @@ sub _bind_params_select {
     my $h = shift;
     map {
         exists $h->{$_} ? @{$h->{$_}} : ()
-    } qw(Show_Bind From_Bind Where_Bind Group_Bind Order_Bind);
+    } qw(Show_Bind From_Bind Where_Bind Group_Bind Having_Bind Order_Bind);
 }
 
 # TODO: Should we die if GROUP BY is set?
@@ -179,21 +180,12 @@ sub _valid_col {
 }
 
 sub _parse_col {
-    my ($me, $col, $_chk_aliases) = @_;
+    my ($me, $col, $_check_aliases) = @_;
     if (ref $col) {
         return $me->_valid_col($col) if blessed $col and $col->isa('DBIx::DBO::Column');
         ouch 'Invalid column: '.$col;
     }
-    for my $tbl ($me->tables) {
-        return $tbl->column($col) if exists $tbl->{Column_Idx}{$col};
-    }
-    if ($_chk_aliases) {
-        for my $fld (@{$me->{build_data}{Showing}}) {
-            return \($me->_qi($col))
-                if !blessed $fld and exists $fld->[2]{AS} and $col eq $fld->[2]{AS};
-        }
-    }
-    ouch 'No such column: '.$col;
+    $me->column($col, $_check_aliases);
 }
 
 sub _build_col {
@@ -223,7 +215,8 @@ sub _parse_val {
         $opt{COLLATE} = $fld->{COLLATE} if exists $fld->{COLLATE};
         if (exists $fld->{COL}) {
             ouch 'Invalid HASH containing both COL and VAL' if exists $fld->{VAL};
-            $fld = $me->_parse_col($fld->{COL}, $c{Aliases});
+            my @cols = ref $fld->{COL} eq 'ARRAY' ? @{$fld->{COL}} : $fld->{COL};
+            $fld = [ map $me->_parse_col($_, $c{Aliases}), @cols ];
         } else {
             $fld = exists $fld->{VAL} ? $fld->{VAL} : [];
         }
@@ -375,6 +368,17 @@ sub _build_group {
     $h->{group} = join ', ', map $me->_build_val($h->{Group_Bind}, @$_), @{$h->{GroupBy}};
 }
 
+# Construct the HAVING clause
+sub _build_having {
+    my $me = shift;
+    my $h = shift;
+    return $h->{having} if defined $h->{having};
+    undef @{$h->{Having_Bind}};
+    my @having;
+    push @having, $me->_build_where_chunk($h->{Having_Bind}, 'OR', $h->{Having_Data}) if exists $h->{Having_Data};
+    $h->{having} = join ' AND ', @having;
+}
+
 sub _build_order {
     my $me = shift;
     my $h = shift;
@@ -397,10 +401,36 @@ sub _set_config {
     my $me = shift;
     my ($ref, $opt, $val) = @_;
     ouch "Invalid value for the 'UseHandle' setting"
-        if $opt eq 'UseHandle' and defined $val and $val ne 'read-only' and $val ne 'read-write';
+        if $opt eq 'UseHandle' and $val and $val ne 'read-only' and $val ne 'read-write';
     my $old = $ref->{$opt};
     $ref->{$opt} = $val;
     return $old;
+}
+
+sub _create_dbd_class {
+    my $class = shift;
+    $class =~ s/::DBD::\w+$//;
+    $class = $class->_set_dbd_inheritance(@_);
+    Class::C3::initialize() if $DBIx::DBO::need_c3_initialize;
+    return $class;
+}
+
+sub _set_dbd_inheritance {
+    my $class = shift;
+    my $dbd = shift;
+    $class =~ s/::DBD::\w+$//;
+    # Inheritance
+    no strict 'refs';
+    unless (@{$class.'::DBD::'.$dbd.'::ISA'}) {
+        my @isa = grep $_->can('_set_dbd_inheritance'), @_ ? @_ : @{$class.'::ISA'};
+        $_->_set_dbd_inheritance($dbd) for @isa;
+        @{$class.'::DBD::'.$dbd.'::ISA'} = ($class, map $_.'::DBD::'.$dbd, @isa);
+        if ($DBIx::DBO::use_c3_mro) {
+            mro::set_mro($class.'::DBD::'.$dbd, 'c3');
+            $DBIx::DBO::need_c3_initialize = $] < 5.009_005;
+        }
+    }
+    return $class.'::DBD::'.$dbd;
 }
 
 1;
