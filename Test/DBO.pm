@@ -9,6 +9,7 @@ use warnings;
 
 use Scalar::Util qw(blessed reftype);
 use Test::More;
+use DBIx::DBO;
 BEGIN {
     # If we are using a version of Test::More older than 0.82 ...
     unless (exists $Test::More::{note}) {
@@ -43,7 +44,6 @@ BEGIN {
         };
     }
 }
-use DBIx::DBO;
 
 our $dbd;
 our $dbd_name;
@@ -51,6 +51,8 @@ our $dbd_name;
 (our $test_sch = "DBO_${DBIx::DBO::VERSION}_test_sch") =~ s/\W/_/g;
 (our $test_tbl = "DBO_${DBIx::DBO::VERSION}_test_tbl") =~ s/\W/_/g;
 our @_cleanup_sql;
+our $case_sensitivity_sql = 'SELECT ? LIKE ?';
+our $multi_table_update;
 
 sub import {
     my $class = shift;
@@ -113,13 +115,11 @@ sub import {
 
 sub sql_err {
     my $obj = shift;
-
-    my $errstr = $DBI::errstr or return;
     my ($cmd, $sql, @bind) = @{$obj->_last_sql};
     $sql =~ s/^/  /mg;
     my @err = ('SQL command failed:', $sql.';');
     push @err, 'Bind Values: ('.join(', ', map $obj->rdbh->quote($_), @bind).')' if @bind;
-    push @err, $errstr || '???';
+    push @err, $obj->rdbh->errstr || '???';
     $err[-1] =~ s/ at line \d+$//;
     join "\n", @err;
 }
@@ -154,10 +154,12 @@ sub connect_ok {
 sub basic_methods {
     my $dbo = shift;
     my $quoted_table = $dbo->_qi($test_sch, $test_tbl);
+    my @quoted_cols = map $dbo->_qi($_), qw(type id name);
     my $t;
+    my $create_table = "CREATE TABLE $quoted_table ($quoted_cols[1] INT, $quoted_cols[2] VARCHAR(20))";
 
     # Create a test table with a multi-column primary key
-    if ($dbo->do("CREATE TABLE $quoted_table (name TEXT, id INT, type VARCHAR(8), PRIMARY KEY (type, id))")) {
+    if ($dbo->do("CREATE TABLE $quoted_table ($quoted_cols[2] VARCHAR(20), $quoted_cols[1] INT, $quoted_cols[0] VARCHAR(8), PRIMARY KEY ($quoted_cols[0], $quoted_cols[1]))")) {
         pass 'Create a test table';
 
         # Create a table object
@@ -168,8 +170,12 @@ sub basic_methods {
         is_deeply $t->{PrimaryKeys}, ['type', 'id'], 'Check PrimaryKeys';
 
         # Recreate our test table
-        $dbo->do("DROP TABLE $quoted_table") && $dbo->do("CREATE TABLE $quoted_table (id INT, name TEXT)")
+        $dbo->do("DROP TABLE $quoted_table") && $dbo->do($create_table)
             or diag sql_err($dbo) or die "Can't recreate the test table!\n";
+
+        # Remove the created table during cleanup
+        todo_cleanup("DROP TABLE $quoted_table");
+
         $dbo->_get_table_info($t->{Schema}, $t->{Name});
         $t = $dbo->table([$test_sch, $test_tbl]);
     }
@@ -180,8 +186,11 @@ sub basic_methods {
         }
 
         # Create our test table
-        ok $dbo->do("CREATE TABLE $quoted_table (id INT, name TEXT)"), 'Create our test table'
+        ok $dbo->do($create_table), 'Create our test table'
             or diag sql_err($dbo) or die "Can't create the test table!\n";
+
+        # Remove the created table during cleanup
+        todo_cleanup("DROP TABLE $quoted_table");
 
         # Create our table object
         $t = $dbo->table([$test_sch, $test_tbl]);
@@ -235,9 +244,6 @@ sub basic_methods {
     $rv = $t->delete(id => 3) or diag sql_err($t);
     is $rv, 1, 'Method DBIx::DBO::Table->delete';
 
-    # Remove the created table during cleanup
-    todo_cleanup("DROP TABLE $quoted_table");
-
     return $t;
 }
 
@@ -283,7 +289,6 @@ sub row_methods {
     ok $r->load(id => 2, name => 'Jane Smith'), 'Method DBIx::DBO::Row->load' or diag sql_err($r);
     is_deeply $$r->{array}, [ 2, 'Jane Smith' ], 'Row loaded correctly';
 
-$r->config(DEBUG_SQL => 1);
     is $r->update(name => 'Someone Else'), 1, 'Method DBIx::DBO::Row->update' or diag sql_err($r);
     is $$r->{array}, undef, 'Row is empty again';
     is_deeply \@{$r->load(id => 2)}, [ 2, 'Someone Else' ], 'Row updated correctly' or diag sql_err($r);
@@ -361,8 +366,9 @@ sub query_methods {
     is $q->sql, $dbo->query($t)->sql, 'Method DBIx::DBO::Query->reset';
 
     # Group by the first initial
-    $q->show({FUNC => 'SUBSTR(?, 1, 1)', COL => 'name', AS => 'initial'});
-    ok(($q->group_by('initial'), $q->run), 'Method DBIx::DBO::Query->group_by') or diag sql_err($q);
+    $q->show(\'COUNT(*)');
+    ok(($q->group_by({FUNC => 'SUBSTR(?, 1, 1)', COL => 'name'}), $q->run),
+        'Method DBIx::DBO::Query->group_by') or diag sql_err($q);
 
     $q->finish;
     return $q;
@@ -385,8 +391,8 @@ sub advanced_query_methods {
     is $q->fetch ** $t ** 'name', 'John Doe', 'Access specific column from a shown table';
 
     # Check case sensitivity of LIKE
-    my $case_sensitive = $dbo->selectrow_arrayref('SELECT ? LIKE ?', undef, 'a', 'A') or diag sql_err($dbo);
-    $case_sensitive = $case_sensitive->[0];
+    my $case_sensitive = $dbo->selectrow_arrayref($case_sensitivity_sql, undef, 'a', 'A') or diag sql_err($dbo);
+    $case_sensitive = not $case_sensitive->[0];
     note "$dbd_name 'LIKE' is".($case_sensitive ? '' : ' NOT').' case sensitive';
 
     # WHERE clause
@@ -415,7 +421,6 @@ sub skip_advanced_query_methods {
 sub join_methods {
     my $dbo = shift;
     my $table = shift;
-    my $skip_multi = shift;
 
     my ($q, $t1, $t2) = $dbo->query($table, $table);
     $q->limit(3);
@@ -430,7 +435,8 @@ sub join_methods {
     $q->where($t1 ** 'name', '>', $t2 ** 'name', FORCE => 'OR');
     my $r;
     SKIP: {
-        $r = $q->fetch or diag sql_err($q) or fail 'JOIN ON' or skip 'No Left Join', 1;
+        $q->run or diag sql_err($q) or fail 'JOIN ON' or skip 'No Left Join', 1;
+        $r = $q->fetch or fail 'JOIN ON' or skip 'No Left Join', 1;
 
         is_deeply \@$r, [ 1, 'John Doe', 2, 'Jane Smith' ], 'JOIN ON';
         $r->load($t1 ** id => 2) or diag sql_err($r);
@@ -441,10 +447,19 @@ sub join_methods {
     $t2 = $q->join_table($table, 'left');
     $q->join_on($t2, $t1 ** 'id', '=', { FUNC => '?/2.0', COL => $t2 ** 'id' });
     $q->order_by({ COL => $t1 ** 'name', ORDER => 'DESC' });
-    $q->limit(1, 3);
+
+    if ($dbd eq 'Oracle') {
+        # Oracle doesn't support LIMIT OFFSET
+        $q->fetch;
+        $q->fetch;
+        $q->fetch;
+    } else {
+        $q->limit(1, 3);
+    }
 
     SKIP: {
-        $r = $q->fetch or diag sql_err($q) or fail 'LEFT JOIN' or skip 'No Left Join', 3;
+        $q->sth or diag sql_err($q) or fail 'LEFT JOIN' or skip 'No Left Join', 3;
+        $r = $q->fetch or fail 'LEFT JOIN' or skip 'No Left Join', 3;
 
         is_deeply \@$r, [ 4, 'James Bond', undef, undef ], 'LEFT JOIN';
         is $r->_column_idx($t2 ** 'id'), 2, 'Method DBIx::DBO::Row->_column_idx';
@@ -452,7 +467,7 @@ sub join_methods {
 
         # Update the LEFT JOINed row
         SKIP: {
-            skip "Mutli-table UPDATE is not supported by $dbd_name", 1 if $skip_multi;
+            skip "Multi-table UPDATE is not supported by $dbd_name", 1 unless $multi_table_update;
             ok $r->update($t1 ** 'name' => 'Vernon Wayne Lyon'), 'Method DBIx::DBO::Row->update' or diag sql_err($r);
         }
     }
