@@ -1,14 +1,19 @@
 use strict;
 use warnings;
 
+# Allow the use of ORACLE_USERID or DBO_TEST_ORACLE_USER
+BEGIN {
+    $ENV{DBO_TEST_ORACLE_USER} = $ENV{ORACLE_USERID}
+        if exists $ENV{ORACLE_USERID} and not exists $ENV{DBO_TEST_ORACLE_USER};
+}
 # Create the DBO (2 tests)
 my $dbo;
-use Test::DBO SQLite => 'SQLite', tests => 66, tempdir => 1, connect_ok => [\$dbo];
+use Test::DBO Oracle => 'Oracle', tests => 66, connect_ok => [\$dbo];
 
-# In SQLite there is no Schema
+# Use the default Schema
 undef $Test::DBO::test_db;
 undef $Test::DBO::test_sch;
-$Test::DBO::can{collate} = 'BINARY';
+$Test::DBO::case_sensitivity_sql = 'SELECT COUNT(*) FROM DUAL WHERE ? LIKE ?';
 
 # Table methods: do, select* (15 tests)
 my $t = Test::DBO::basic_methods($dbo);
@@ -26,7 +31,7 @@ my $q = Test::DBO::query_methods($dbo, $t);
 Test::DBO::advanced_query_methods($dbo, $t, $q);
 
 # Join methods: (9 tests)
-Test::DBO::join_methods($dbo, $t->{Name}, 1);
+Test::DBO::join_methods($dbo, $t->{Name});
 
 END {
     # Cleanup (1 test)
