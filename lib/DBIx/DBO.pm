@@ -11,6 +11,7 @@ use DBIx::DBO::Row;
 
 our @ISA;
 my $need_c3_initialize;
+my @ConnectArgs;
 
 BEGIN {
     # The C3 method resolution order is required.
@@ -27,7 +28,7 @@ DBIx::DBO - An OO interface to SQL queries and results.  Easily constructs SQL q
 
 =cut
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 =head1 SYNOPSIS
 
@@ -65,18 +66,18 @@ our $VERSION = '0.06';
   
       # Update/delete rows
       $row->update(status => 'Fired!') if $row->{name} eq 'Harry';
-      $row->delete if $record->{id} == 27;
+      $row->delete if $row->{id} == 27;
   }
 
 =head1 DESCRIPTION
 
 This module provides a convenient and efficient way to access a database.  It can construct queries for you and returns the results in easy to use methods.
 
-Once you've created a C<DBIx::DBO> object using one or both of C<connect> or C<connect_readonly>, you can begin creating C<DBIx::DBO::Query> objects.  These are the "workhorse" objects, they encapsulate an entire query with JOINs, WHERE clauses, etc.  You need not have to know about what created the C<Query> to be able to use or modify it.  This makes it valuable in environments like mod_perl or large projects that prefer an object oriented approach to data.
+Once you've created a C<DBIx::DBO> object using one or both of C<connect> or C<connect_readonly>, you can begin creating L<DBIx::DBO::Query|DBIx::DBO::Query> objects.  These are the "workhorse" objects, they encapsulate an entire query with JOINs, WHERE clauses, etc.  You need not have to know about what created the C<Query> to be able to use or modify it.  This makes it valuable in environments like mod_perl or large projects that prefer an object oriented approach to data.
 
 The query is only automatically executed when the data is requested.  This is to make it possible to minimise lookups that may not be needed or to delay them as late as possible.
 
-The C<DBIx::DBO::Row> object returned can be treated as both an arrayref or a hashref.  The data is aliased for efficient use of memory.  C<Row> objects can be updated or deleted, even when created by JOINs (If the DB supports it).
+The L<DBIx::DBO::Row|DBIx::DBO::Row> object returned can be treated as both an arrayref or a hashref.  The data is aliased for efficient use of memory.  C<Row> objects can be updated or deleted, even when created by JOINs (If the DB supports it).
 
 =head1 METHODS
 
@@ -156,11 +157,11 @@ sub connect {
     if (blessed $me) {
         ouch 'DBO is already connected' if $me->{dbh};
         $me->_check_driver($_[0]) if @_;
-        $me->{dbh} = $me->_connect($me->{ConnectArgs} ||= [], @_) or return;
+        $me->{dbh} = $me->_connect($me->{ConnectArgs} ||= @ConnectArgs, @_) or return;
         return $me;
     }
     my %new;
-    my $dbh = $me->_connect($new{ConnectArgs} = [], @_) or return;
+    my $dbh = $me->_connect($new{ConnectArgs} = @ConnectArgs, @_) or return;
     $me->new($dbh, undef, \%new);
 }
 
@@ -169,11 +170,11 @@ sub connect_readonly {
     if (blessed $me) {
         $me->{rdbh}->disconnect if $me->{rdbh};
         $me->_check_driver($_[0]) if @_;
-        $me->{rdbh} = $me->_connect($me->{ConnectReadOnlyArgs} ||= [], @_) or return;
+        $me->{rdbh} = $me->_connect($me->{ConnectReadOnlyArgs} ||= @ConnectArgs, @_) or return;
         return $me;
     }
     my %new;
-    my $dbh = $me->_connect($new{ConnectReadOnlyArgs} = [], @_) or return;
+    my $dbh = $me->_connect($new{ConnectReadOnlyArgs} = @ConnectArgs, @_) or return;
     $me->new(undef, $dbh, \%new);
 }
 
@@ -191,12 +192,12 @@ sub _check_driver {
 
 sub _connect {
     my $me = shift;
-    my $conn = shift;
+    my $conn = $ConnectArgs[shift] ||= [];
     if (@_) {
         my ($dsn, $user, $auth, $attr) = @_;
         my %attr = %$attr if ref($attr) eq 'HASH';
 
-### Add a stack trace to PrintError & RaiseError
+        # Add a stack trace to PrintError & RaiseError
         $attr{HandleError} = sub {
             if ($Config{DebugSQL} > 1) {
                 $_[0] = Carp::longmess($_[0]);
@@ -207,7 +208,7 @@ sub _connect {
             return 1;
         } unless exists $attr{HandleError};
 
-### AutoCommit is always on
+        # AutoCommit is always on
         %attr = (PrintError => 0, RaiseError => 1, %attr, AutoCommit => 1);
         @$conn = ($dsn, $user, $auth, \%attr);
     }
@@ -319,7 +320,8 @@ Create and return a new L<DBIx::DBO::Row|DBIx::DBO::Row> object.
 =cut
 
 sub row {
-    (my $class = ref($_[0])) =~ s/(::DBD::\w+)$/::Row/;
+    my $class = $_[0]->config('RowClass');
+    ($class = ref($_[0])) =~ s/(::DBD::\w+)$/::Row/ unless $class;
     $class->new(@_);
 }
 
@@ -376,7 +378,6 @@ sub _get_table_schema {
     my $me = shift;
     my $schema = my $q_schema = shift;
     my $table = my $q_table = shift;
-    ouch 'No table name supplied' unless defined $table and length $table;
 
     $q_schema =~ s/([\\_%])/\\$1/g if defined $q_schema;
     $q_table =~ s/([\\_%])/\\$1/g;
@@ -394,7 +395,6 @@ sub _get_table_info {
     my $me = shift;
     my $schema = shift;
     my $table = shift;
-    ouch 'No table name supplied' unless defined $table and length $table;
 
     my $cols = $me->rdbh->column_info(undef, $schema, $table, '%')->fetchall_arrayref({});
     ouch 'Invalid table: '.$me->_qi($table) unless @$cols;
@@ -423,6 +423,7 @@ sub table_info {
     my $me = shift;
     my $table = shift;
     my $schema;
+    ouch 'No table name supplied' unless defined $table and length $table;
 
     if (blessed $table and $table->isa('DBIx::DBO::Table')) {
         ($schema, $table) = @$table{qw(Schema Name)};
@@ -533,6 +534,10 @@ Boolean setting to control quoting of SQL identifiers (schema, table and column 
 Set to C<'read-write'> or C<'read-only'> to force using only that handle for all operations.
 Defaults to C<false> which chooses the I<read-only> handle for reads and the I<read-write> handle otherwise.
 
+=item C<RowClass>
+
+Set the class name for new C<Row> objects. C<Row> objects created will be blessed into this class, which should inhereit from C<DBIx::DBO::Row>.
+
 =item C<DebugSQL>
 
 Set to C<1> or C<2> to warn about each SQL command executed.  C<2> adds a full stack trace.
@@ -564,6 +569,21 @@ sub DESTROY {
 1;
 
 __END__
+
+=head1 SUBCLASSING
+
+C<DBIx::DBO> supports multiple inheritance.
+For this reason it's advisable that L<MRO::Compat|MRO::Compat> is installed if the perl version you are using is less than 5.9.5 as that module will ensure that the 'C3' method resolution order is used.
+
+When subclassing C<DBIx::DBO::xxx>, please note that the objects created with their C<new> methods are blessed into DBD driver specific modules.
+For details on subclassing the C<Query> or C<Row> objects see: L<DBIx::DBO::Query/"subclassing"> and L<DBIx::DBO::Row/"subclassing">.
+This is the simple (recommended) way to create objects representing a single query, table or row in your database.
+
+When you subclass C<DBIx::DBO>, it affects inheritance for all objects created by this C<DBO>.
+For example, if using MySQL and a subclass of C<DBIx::DBO> named C<MySubClass>, then the object returned from L</connect> would be blessed into C<MySubClass::DBD::mysql> which would inherit from both C<MySubClass> and C<DBIx::DBO::DBD::mysql>.
+Any objects created by this C<DBO> will have a similar inheritance path.
+For example, a new C<Query> object would be blessed into C<MySubClass::Query::DBD::mysql> which would in turn inherit from both C<MySubClass::Query> and C<DBIx::DBO::Query::DBD::mysql>.
+These classes are automatically created if they don't exist.
 
 =head1 AUTHOR
 

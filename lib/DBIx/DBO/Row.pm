@@ -86,11 +86,16 @@ sub _init {
     }
 }
 
+sub _copy {
+    my $val = shift;
+    ref $val eq 'ARRAY' ? [map _copy($_), @$val] : ref $val eq 'HASH' ? {map _copy($_), %$val} : $val;
+}
+
 sub _copy_build_data {
     my $me = shift;
     # Store needed build_data
-    for (qw(Showing from From_Bind Quick_Where Where_Data Where_Bind group Group_Bind order Order_Bind)) {
-        $$me->{build_data}{$_} = $$me->{Parent}{build_data}{$_} if exists $$me->{Parent}{build_data}{$_};
+    for my $f (qw(Showing from From_Bind Quick_Where Where_Data Where_Bind group Group_Bind order Order_Bind)) {
+        $$me->{build_data}{$f} = _copy($$me->{Parent}{build_data}{$f}) if exists $$me->{Parent}{build_data}{$f};
     }
 }
 
@@ -333,16 +338,16 @@ The I<read-only> C<DBI> handle, or if there is no I<read-only> connection, the I
 
 =head3 C<do>
 
-  $dbo->do($statement)         or die $dbo->dbh->errstr;
-  $dbo->do($statement, \%attr) or die $dbo->dbh->errstr;
-  $dbo->do($statement, \%attr, @bind_values) or die ...
+  $row->do($statement)         or die $row->dbh->errstr;
+  $row->do($statement, \%attr) or die $row->dbh->errstr;
+  $row->do($statement, \%attr, @bind_values) or die ...
 
 This provides access to the L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using the I<read-write> C<DBI> handle.
 
 =head3 C<config>
 
-  $row_setting = $dbo->config($option);
-  $dbo->config($option => $row_setting);
+  $row_setting = $row->config($option);
+  $row->config($option => $row_setting);
 
 Get or set the C<Row> config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the C<Query> object (If the the C<Row> belongs to one) or L<DBIx::DBO|DBIx::DBO>'s value is returned.
 
@@ -365,6 +370,25 @@ sub DESTROY {
 1;
 
 __END__
+
+=head1 SUBCLASSING
+
+When subclassing C<DBIx::DBO::Row>, please note that C<Row> objects created with the L</new> method are blessed into a DBD driver specific module.
+For example, if using MySQL, a new C<Row> object will be blessed into C<DBIx::DBO::Row::DBD::mysql> which inherits from C<DBIx::DBO::Row>.
+However if objects are created from a subclass called C<MySubClass> the new object will be blessed into C<MySubClass::DBD::mysql> which will inherit from both C<MySubClass> and C<DBIx::DBO::Row::DBD::mysql>.
+
+Classes can easily be created for tables in your database.
+Assume you want to create a simple C<Row> class for a "Users" table:
+
+  package My::User;
+  use base 'DBIx::DBO::Row';
+  
+  sub new {
+      my $class = shift;
+      my $dbo = shift;
+      
+      $class->SUPER::new($dbo, 'Users'); # Create the Row for the "Users" table only
+  }
 
 =head1 SEE ALSO
 

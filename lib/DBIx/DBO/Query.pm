@@ -39,12 +39,6 @@ DBIx::DBO::Query - An OO interface to SQL queries and results.  Encapsulates an 
 
 A C<Query> object represents rows from a database (from one or more tables). This module makes it easy, not only to fetch and use the data in the returned rows, but also to modify the query to return a different result set.
 
-=head1 SUBCLASSING
-
-When subclassing C<DBIx::DBO::Query>, please note that C<Query> objects created with the L</new> method are blessed into a DBD driver specific module. For example if using MySQL, a new C<Query> object will be blessed into C<DBIx::DBO::Query::DBD::mysql> which inherits from C<DBIx::DBO::Query>.  However if objects are created from a subclass called C<MySubClass> the new object will be blessed into C<MySubClass::DBD::mysql> which will inherit from both C<MySubClass> and C<DBIx::DBO::Query::DBD::mysql>.
-
-For this reason it's advisable that L<MRO::Compat|MRO::Compat> is installed if the perl version you are using is less than 5.9.5 as this module will try to ensure that the 'C3' method resolution order is used.
-
 =head1 METHODS
 
 =head3 C<new>
@@ -190,6 +184,8 @@ Returns the previous setting.
 
 sub distinct {
     my $me = shift;
+    undef $me->{sql};
+    undef $me->{build_data}{show};
     my $distinct = $me->{build_data}{Show_Distinct};
     $me->{build_data}{Show_Distinct} = shift() ? 1 : undef if @_;
     return $distinct;
@@ -793,7 +789,11 @@ Returns the L<DBIx::DBO::Row|DBIx::DBO::Row> object for the current row from the
 sub row {
     my $me = shift;
     $me->sql; # Build the SQL and detach the Row if needed
-    $me->{Row} ||= $me->{DBO}->row($me);
+    unless ($me->{Row}) {
+        my $row_class = $me->config('RowClass');
+        $me->{Row} = $row_class ? $row_class->new($me->{DBO}, $me) : $me->{DBO}->row($me);
+    }
+    return $me->{Row};
 }
 
 =head3 C<run>
@@ -983,16 +983,16 @@ The I<read-only> C<DBI> handle, or if there is no I<read-only> connection, the I
 
 =head3 C<do>
 
-  $dbo->do($statement)         or die $dbo->dbh->errstr;
-  $dbo->do($statement, \%attr) or die $dbo->dbh->errstr;
-  $dbo->do($statement, \%attr, @bind_values) or die ...
+  $query->do($statement)         or die $query->dbh->errstr;
+  $query->do($statement, \%attr) or die $query->dbh->errstr;
+  $query->do($statement, \%attr, @bind_values) or die ...
 
 This provides access to L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using the I<read-write> C<DBI> handle.
 
 =head3 C<config>
 
-  $query_setting = $dbo->config($option);
-  $dbo->config($option => $query_setting);
+  $query_setting = $query->config($option);
+  $query->config($option => $query_setting);
 
 Get or set this C<Query> object's config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the L<DBIx::DBO|DBIx::DBO>'s value is returned.
 
@@ -1014,6 +1014,42 @@ sub DESTROY {
 1;
 
 __END__
+
+=head1 SUBCLASSING
+
+When subclassing C<DBIx::DBO::Query>, please note that C<Query> objects created with the L</new> method are blessed into a DBD driver specific module.
+For example, if using MySQL, a new C<Query> object will be blessed into C<DBIx::DBO::Query::DBD::mysql> which inherits from C<DBIx::DBO::Query>.
+However if objects are created from a subclass called C<MySubClass> the new object will be blessed into C<MySubClass::DBD::mysql> which will inherit from both C<MySubClass> and C<DBIx::DBO::Query::DBD::mysql>.
+
+Classes can easily be created for tables in your database.
+Assume you want to create a C<Query> and C<Row> class for a "Users" table:
+
+  package My::Users;
+  use base 'DBIx::DBO::Query';
+  
+  sub new {
+      my $class = shift;
+      my $dbo = shift;
+      
+      my $self = $class->SUPER::new($dbo, 'Users'); # Create the Query for the "Users" table only
+      
+      # We could even add some JOINs or other clauses here
+      
+      $self->config(RowClass => 'My::User'); # Rows are blessed into this class
+      return $self;
+  }
+
+  package My::User;
+  use base 'DBIx::DBO::Row';
+  
+  sub new {
+      my $class = shift;
+      my ($dbo, $parent) = @_;
+      
+      $parent ||= My::Users->new($dbo); # The Row will use the same table as it's parent
+      
+      $class->SUPER::new($dbo, $parent);
+  }
 
 =head1 TODO LIST
 

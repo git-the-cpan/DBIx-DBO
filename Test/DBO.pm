@@ -160,7 +160,7 @@ sub basic_methods {
 
     # Create a test table with a multi-column primary key
     if ($dbo->do("CREATE TABLE $quoted_table ($quoted_cols[2] VARCHAR(20), $quoted_cols[1] INT, $quoted_cols[0] VARCHAR(8), PRIMARY KEY ($quoted_cols[0], $quoted_cols[1]))")) {
-        pass 'Create a test table';
+        pass 'Create the test table';
 
         # Create a table object
         $t = $dbo->table([$test_sch, $test_tbl]);
@@ -185,14 +185,14 @@ sub basic_methods {
             skip "Can't create a multi-column primary key", 1;
         }
 
-        # Create our test table
-        ok $dbo->do($create_table), 'Create our test table'
+        # Create the test table
+        ok $dbo->do($create_table), 'Create the test table'
             or diag sql_err($dbo) or die "Can't create the test table!\n";
 
         # Remove the created table during cleanup
         todo_cleanup("DROP TABLE $quoted_table");
 
-        # Create our table object
+        # Create a table object
         $t = $dbo->table([$test_sch, $test_tbl]);
         isa_ok $t, 'DBIx::DBO::Table', '$t';
     }
@@ -325,6 +325,12 @@ sub query_methods {
     isa_ok $r, 'DBIx::DBO::Row', '$q->row';
     my $r_str = "$r";
 
+    # Alter the SQL to ensure the row is detached and rebuilt
+    $q->order_by('id');
+    $r = $q->row;
+    isnt $r_str, "$r", 'Row rebuilds SQL and detaches when a ref still exists';
+    $r_str = "$r";
+
     # Remove the reference so that the row wont detach
     undef $r;
 
@@ -430,6 +436,16 @@ sub join_methods {
     my $table = shift;
 
     my ($q, $t1, $t2) = $dbo->query($table, $table);
+
+    # DISTINCT clause
+    $q->order_by('id');
+    $q->show('id');
+    $q->distinct(1);
+    is_deeply $q->arrayref, [[1],[2],[4],[5],[6],[7]], 'Method DBIx::DBO::Query->distinct';
+    $q->distinct(0);
+    $q->show;
+
+    # Counting rows
     $q->limit(3);
     $q->config(CalcFoundRows => 1);
     ok $q, 'Comma JOIN';
@@ -478,6 +494,10 @@ sub join_methods {
             ok $r->update($t1 ** 'name' => 'Vernon Wayne Lyon'), 'Method DBIx::DBO::Row->update' or diag sql_err($r);
         }
     }
+
+    $q = $dbo->query($table, $table);
+#    $q->fetch;
+Test::DBO::Dump($q->_last_sql);
 
     $q->finish;
 }
