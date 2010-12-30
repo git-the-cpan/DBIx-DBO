@@ -28,7 +28,7 @@ DBIx::DBO - An OO interface to SQL queries and results.  Easily constructs SQL q
 
 =cut
 
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 
 =head1 SYNOPSIS
 
@@ -128,22 +128,22 @@ Both C<connect> & C<connect_readonly> can be called on a C<DBIx::DBO> object to 
 sub new {
     my $me = shift;
     ouch 'Too many arguments for '.(caller(0))[3] if @_ > 3;
-    my $new;
-    if (@_ == 3 and defined($new = pop) and not UNIVERSAL::isa($new, 'HASH')) {
+    my ($dbh, $rdbh, $new) = @_;
+
+    if (defined $new and not UNIVERSAL::isa($new, 'HASH')) {
         ouch '3rd argument to '.(caller(0))[3].' is not a HASH reference';
     }
-    if (defined($new->{dbh} = shift)) {
-        ouch 'Invalid read-write database handle' unless blessed $new->{dbh} and $new->{dbh}->isa('DBI::db');
-        $new->{dbd} = $new->{dbh}{Driver}{Name};
+    if (defined $dbh) {
+        ouch 'Invalid read-write database handle' unless blessed $dbh and $dbh->isa('DBI::db');
+        $new->{dbh} = $dbh;
+        $new->{dbd} ||= $dbh->{Driver}{Name};
     }
-    if (defined($new->{rdbh} = shift)) {
-        ouch 'Invalid read-only database handle' unless blessed $new->{rdbh} and $new->{rdbh}->isa('DBI::db');
-        if ($new->{dbh}) {
-            ouch 'The read-write and read-only connections must use the same DBI driver'
-                if $new->{dbd} ne $new->{rdbh}{Driver}{Name};
-        } else {
-            $new->{dbd} = $new->{rdbh}{Driver}{Name};
-        }
+    if (defined $rdbh) {
+        ouch 'Invalid read-only database handle' unless blessed $rdbh and $rdbh->isa('DBI::db');
+        ouch 'The read-write and read-only connections must use the same DBI driver'
+            if $dbh and $dbh->{Driver}{Name} ne $rdbh->{Driver}{Name};
+        $new->{rdbh} = $rdbh;
+        $new->{dbd} ||= $rdbh->{Driver}{Name};
     }
     ouch "Can't create the DBO, unknown database driver" unless $new->{dbd};
 
@@ -154,27 +154,33 @@ sub new {
 
 sub connect {
     my $me = shift;
+    my $conn;
     if (blessed $me) {
         ouch 'DBO is already connected' if $me->{dbh};
         $me->_check_driver($_[0]) if @_;
-        $me->{dbh} = $me->_connect($me->{ConnectArgs} ||= @ConnectArgs, @_) or return;
+        $conn = $me->{ConnectArgs} ||= scalar @ConnectArgs if $me->config('AutoReconnect');
+        $me->{dbh} = $me->_connect($conn, @_) or return;
         return $me;
     }
     my %new;
-    my $dbh = $me->_connect($new{ConnectArgs} = @ConnectArgs, @_) or return;
+    $conn = $new{ConnectArgs} = scalar @ConnectArgs if $me->config('AutoReconnect');
+    my $dbh = $me->_connect($conn, @_) or return;
     $me->new($dbh, undef, \%new);
 }
 
 sub connect_readonly {
     my $me = shift;
+    my $conn;
     if (blessed $me) {
         $me->{rdbh}->disconnect if $me->{rdbh};
         $me->_check_driver($_[0]) if @_;
-        $me->{rdbh} = $me->_connect($me->{ConnectReadOnlyArgs} ||= @ConnectArgs, @_) or return;
+        $conn = $me->{ConnectReadOnlyArgs} ||= scalar @ConnectArgs if $me->config('AutoReconnect');
+        $me->{rdbh} = $me->_connect($conn, @_) or return;
         return $me;
     }
     my %new;
-    my $dbh = $me->_connect($new{ConnectReadOnlyArgs} = @ConnectArgs, @_) or return;
+    $conn = $new{ConnectReadOnlyArgs} = scalar @ConnectArgs if $me->config('AutoReconnect');
+    my $dbh = $me->_connect($conn, @_) or return;
     $me->new(undef, $dbh, \%new);
 }
 
@@ -192,7 +198,11 @@ sub _check_driver {
 
 sub _connect {
     my $me = shift;
-    my $conn = $ConnectArgs[shift] ||= [];
+    my $conn = shift;
+    # If a conn index is given then store the connection args
+    $conn = $ConnectArgs[$conn] if defined $conn;
+    $conn ||= [];
+
     if (@_) {
         my ($dsn, $user, $auth, $attr) = @_;
         my %attr = %$attr if ref($attr) eq 'HASH';
@@ -542,6 +552,13 @@ Override the class name for new C<Row> objects. C<Row> objects created will be b
 
 Set to C<1> or C<2> to warn about each SQL command executed.  C<2> adds a full stack trace.
 Defaults to C<0> (silent).
+
+=item C<AutoReconnect>
+
+Boolean setting to store the connection details for re-use.
+Before every operation the connection will be tested via ping() and reconnected automatically if needed.
+It has no effect after the connection has been made.
+Defaults to C<false>.
 
 =back
 

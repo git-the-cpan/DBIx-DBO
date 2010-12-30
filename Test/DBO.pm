@@ -11,6 +11,8 @@ use Scalar::Util qw(blessed reftype);
 use Test::More;
 use DBIx::DBO;
 BEGIN {
+    require Carp::Heavy if $Carp::VERSION < 1.12;
+
     # If we are using a version of Test::More older than 0.82 ...
     unless (exists $Test::More::{note}) {
         eval q#
@@ -26,21 +28,30 @@ BEGIN {
     }
 
     # Set up DebugSQL if requested
-    require DBIx::DBO::Common;
-
     if ($ENV{DBO_DEBUG_SQL}) {
         diag "DBO_DEBUG_SQL=$ENV{DBO_DEBUG_SQL}";
-        package DBIx::DBO::Common;
-
         DBIx::DBO->config(DebugSQL => $ENV{DBO_DEBUG_SQL});
+    }
+
+    # Store the last SQL executed, and show debug info
+    {
+        package DBIx::DBO::Common;
         no warnings 'redefine';
-        *DBIx::DBO::Common::_carp_last_sql = sub {
+        *DBIx::DBO::Common::_sql = sub {
             my $me = shift;
-            my ($cmd, $sql, @bind) = @{$me->_last_sql};
-            local $Carp::Verbose = 1 if $me->config('DebugSQL') > 1;
-            my @mess = split /\n/, Carp::shortmess("\t$cmd called");
-            splice @mess, 0, 3 if $Carp::Verbose;
-            Test::More::diag join "\n", "DEBUG_SQL: $sql", 'DEBUG_SQL: ('.join(', ', map $me->rdbh->quote($_), @bind).')', @mess;
+            my $loc = Carp::short_error_loc();
+            my %i = Carp::caller_info($loc);
+            @{(Scalar::Util::reftype($me) eq 'REF' ? $$me : $me)->{LastSQL}} = ($i{'sub'}, @_);
+            my $dbg = $me->config('DebugSQL') or return;
+            my $trace;
+            if ($dbg > 1) {
+                $trace = "\t$i{sub_name} called at $i{file} line $i{line}\n";
+                $trace .= "\t$i{sub_name} called at $i{file} line $i{line}\n" while %i = Carp::caller_info(++$loc);
+            } else {
+                $trace = "\t$i{sub} called at $i{file} line $i{line}\n";
+            }
+            my $sql = shift;
+            Test::More::diag "DEBUG_SQL: $sql\nDEBUG_SQL: (".join(', ', map $me->rdbh->quote($_), @_).")\n".$trace;
         };
     }
 }
@@ -114,20 +125,14 @@ sub import {
 }
 
 sub sql_err {
-    my $obj = shift;
-    my ($cmd, $sql, @bind) = @{$obj->_last_sql};
+    my $me = shift;
+    my ($cmd, $sql, @bind) = @{(Scalar::Util::reftype($me) eq 'REF' ? $$me : $me)->{LastSQL}};
     $sql =~ s/^/  /mg;
-    my @err = ('SQL command failed:', $sql.';');
-    push @err, 'Bind Values: ('.join(', ', map $obj->rdbh->quote($_), @bind).')' if @bind;
-    push @err, $obj->rdbh->errstr || '???';
+    my @err = ("SQL command failed: $cmd", $sql.';');
+    push @err, 'Bind Values: ('.join(', ', map $me->rdbh->quote($_), @bind).')' if @bind;
+    push @err, $me->rdbh->errstr || '???';
     $err[-1] =~ s/ at line \d+$//;
     join "\n", @err;
-}
-
-sub last_sql {
-    my $me = shift;
-    my ($cmd, $sql, @bind) = @{$me->_last_sql};
-    print $sql, "\n(".join(', ', map $me->rdbh->quote($_), @bind).")\n";
 }
 
 sub connect_dbo {
@@ -155,7 +160,7 @@ sub basic_methods {
     my $dbo = shift;
 
     # Create a DBO from DBI handles
-    new_ok 'DBIx::DBO', [ $dbo->{dbh}, $dbo->{rdbh} ], 'Method DBIx::DBO->new, $dbo';
+    isa_ok(DBIx::DBO->new($dbo->{dbh}, $dbo->{rdbh}), 'DBIx::DBO', 'Method DBIx::DBO->new, $dbo');
 
     my $quoted_table = $dbo->_qi($test_sch, $test_tbl);
     my @quoted_cols = map $dbo->_qi($_), qw(type id name);
@@ -391,6 +396,13 @@ sub query_methods {
     ok(($q->group_by({FUNC => 'SUBSTR(?, 1, 1)', COL => 'name'}), $q->run),
         'Method DBIx::DBO::Query->group_by') or diag sql_err($q);
 
+    # Update & Load a Row with aliased columns
+    $q->show('name', {COL => 'id', AS => 'key'});
+    $q->group_by;
+    $r = $q->fetch;
+    ok $r->update(id => $r->{key}), 'Can update a Row using aliases' or diag sql_err($r);
+    ok $r->load(id => 5), 'Can load a Row using aliases' or diag sql_err($r);
+
     $q->finish;
     return $q;
 }
@@ -545,11 +557,11 @@ sub Dump {
             $var = 'r';
         }
     }
-    defined $var or $var = 'dump';
+    $var = 'dump' unless defined $var;
     require Data::Dumper;
     my $d = Data::Dumper->new([$val], [$var]);
     my %seen;
-    if (defined $val) {
+    if (ref $val) {
         @_no_recursion = ($val);
         if (reftype $val eq 'ARRAY')   { _Find_Seen(\%seen, $_) for @$val }
         elsif (reftype $val eq 'HASH') { _Find_Seen(\%seen, $_) for values %$val }
@@ -592,6 +604,24 @@ sub _Find_Seen {
     if (reftype $val eq 'ARRAY')   { _Find_Seen($seen, $_) for @$val }
     elsif (reftype $val eq 'HASH') { _Find_Seen($seen, $_) for values %$val }
     elsif (reftype $val eq 'REF')  { _Find_Seen($seen, $$val) }
+}
+
+# When testing via Sponge, use fake tables
+package # hide from PAUSE
+    DBIx::DBO::DBD::Sponge;
+sub _get_table_schema {
+    return;
+}
+my $fake_table_info = {
+    PrimaryKeys => [],
+    Columns => [ 'id', 'name', 'age' ],
+    Column_Idx => { id => 1, name => 2, age => 3 },
+};
+sub _get_table_info {
+    my $me = shift;
+    my ($schema, $table) = @_;
+    # Fake table info
+    return $me->{TableInfo}{''}{$table} = $fake_table_info;
 }
 
 1;

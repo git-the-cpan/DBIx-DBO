@@ -45,27 +45,21 @@ sub _qi {
     join '.', @_;
 }
 
-sub _last_sql {
-    my $me = shift;
-    my $ref = (Scalar::Util::reftype($me) eq 'REF' ? $$me : $me)->{LastSQL} ||= [];
-    @$ref = @_ if @_;
-    $ref;
-}
-
-sub _carp_last_sql {
-    my $me = shift;
-    my ($cmd, $sql, @bind) = @{$me->_last_sql};
-    local $Carp::Verbose = 1 if $me->config('DebugSQL') > 1;
-    my @mess = split /\n/, Carp::shortmess("\t$cmd called");
-    splice @mess, 0, 3 if $Carp::Verbose;
-    warn join "\n", $sql, '('.join(', ', map $me->rdbh->quote($_), @bind).')', @mess;
-}
-
 sub _sql {
     my $me = shift;
-    my $cmd = (caller(1))[3];
-    $me->_last_sql($cmd, @_);
-    $me->_carp_last_sql if $me->config('DebugSQL');
+    my $dbg = $me->config('DebugSQL') or return;
+    my $sql = shift;
+    require Carp::Heavy if $Carp::VERSION < 1.12;
+    my $loc = Carp::short_error_loc();
+    my %i = Carp::caller_info($loc);
+    my $trace;
+    if ($dbg > 1) {
+        $trace = "\t$i{sub_name} called at $i{file} line $i{line}\n";
+        $trace .= "\t$i{sub_name} called at $i{file} line $i{line}\n" while %i = Carp::caller_info(++$loc);
+    } else {
+        $trace = "\t$i{sub} called at $i{file} line $i{line}\n";
+    }
+    warn $sql."\n(".join(', ', map $me->rdbh->quote($_), @_).")\n".$trace;
 }
 
 sub do {
@@ -95,10 +89,10 @@ sub _bind_params_select {
     } qw(Show_Bind From_Bind Where_Bind Group_Bind Having_Bind Order_Bind);
 }
 
-# TODO: Should we die if GROUP BY is set?
 sub _build_sql_update {
     my $me = shift;
     my $h = shift;
+    ouch 'Update is not valid with a GROUP BY clause' if $me->_build_group($h);
     my $sql = 'UPDATE '.$me->_build_from($h);
     $sql .= ' SET '.$me->_build_set($h, @_);
     $sql .= ' WHERE '.$_ if $_ = $me->_build_where($h);
@@ -118,6 +112,7 @@ sub _bind_params_update {
 sub _build_sql_delete {
     my $me = shift;
     my $h = shift;
+    ouch 'Delete is not valid with a GROUP BY clause' if $me->_build_group($h);
     my $sql = 'DELETE FROM '.$me->_build_from($h);
     $sql .= ' WHERE '.$_ if $_ = $me->_build_where($h);
     $sql .= ' ORDER BY '.$_ if $_ = $me->_build_order($h);
@@ -172,8 +167,22 @@ sub _build_from {
     $h->{from};
 }
 
+# In some cases column aliases can be used, but this differs by DB and where in the statement it's used.
+# The $method is the method we were called from: (join_on|column|where|having|_del_where|order_by|group_by)
+# This method provides a way for DBs to override the default which is always 1 except for join_on.
+# Return values: 0 = Don't use aliases, 1 = Check aliases then columns, 2 = Check columns then aliases
+sub _alias_preference {
+    my $me = shift;
+    my $method = shift;
+    return $method eq 'join_on' ? 0 : 1;
+}
+
 sub _valid_col {
     my ($me, $col) = @_;
+    # Check if the object is an alias
+    return $col if $col->[0] == $me;
+    # TODO: Sub-queries
+    # Check if the column is from one of our tables
     for my $tbl ($me->tables) {
         return $col if $col->[0] == $tbl;
     }
@@ -186,7 +195,8 @@ sub _parse_col {
         return $me->_valid_col($col) if blessed $col and $col->isa('DBIx::DBO::Column');
         ouch 'Invalid column: '.$col;
     }
-    $me->column($col, $_check_aliases);
+    # If $_check_aliases is not defined dont accept an alias
+    $me->column($col, $_check_aliases || 0);
 }
 
 sub _build_col {
@@ -340,6 +350,7 @@ sub _build_quick_where {
     my ($me, $bind) = splice @_, 0, 2;
     my @where;
     while (my ($col, $val) = splice @_, 0, 2) {
+        # FIXME: What about aliases in quick_where?
         push @where, $me->_build_col($me->_parse_col($col)) .
             ( defined $val ? (ref $val ne 'SCALAR' or $$val !~ /^\s*(?:NOT\s+)NULL\s*$/is) ?
                 ' = '.$me->_build_val($bind, $me->_parse_val($val)) :
@@ -355,8 +366,12 @@ sub _build_set {
     my $h = shift;
     undef @{$h->{Set_Bind}};
     my @set;
-    while (my ($col, $val) = splice @_, 0, 2) {
-        push @set, $me->_build_col($me->_parse_col($col)).' = '.$me->_build_val($h->{Set_Bind}, $me->_parse_val($val));
+    my %remove_duplicates;
+    while (@_) {
+        my @val = $me->_parse_val(pop);
+        my $col = $me->_build_col($me->_parse_col(pop));
+        next if $remove_duplicates{$col}++;
+        unshift @set, $col.' = '.$me->_build_val($h->{Set_Bind}, @val);
     }
     join ', ', @set;
 }
