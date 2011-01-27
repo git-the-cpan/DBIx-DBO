@@ -6,6 +6,16 @@ use DBIx::DBO::Common;
 use Devel::Peek 'SvREFCNT';
 our @ISA;
 
+BEGIN {
+    if ($] < 5.008_009) {
+        require XSLoader;
+        XSLoader::load(__PACKAGE__, $DBIx::DBO::VERSION);
+    } else {
+        require Hash::Util;
+        *_hv_store = \&Hash::Util::hv_store;
+    }
+}
+
 =head1 NAME
 
 DBIx::DBO::Query - An OO interface to SQL queries and results.  Encapsulates an entire query in an object.
@@ -55,7 +65,7 @@ sub new {
     my $proto = shift;
     my $class = ref($proto) || $proto;
     my $me = { DBO => shift, sql => undef };
-    blessed $me->{DBO} and $me->{DBO}->isa('DBIx::DBO') or ouch 'Invalid DBO Object';
+    UNIVERSAL::isa($me->{DBO}, 'DBIx::DBO') or ouch 'Invalid DBO Object';
     ouch 'No table specified in new Query' unless @_;
     bless $me, $class->_set_dbd_inheritance($me->{DBO}{dbd});
 
@@ -88,7 +98,7 @@ sub reset {
     my $me = shift;
     $me->finish;
     $me->unwhere;
-#    $me->{IsDistinct} = 0;
+    $me->distinct(0);
     $me->show;
     $me->group_by;
     $me->order_by;
@@ -148,16 +158,18 @@ sub _check_alias {
     my ($me, $col) = @_;
     for my $fld (@{$me->{build_data}{Showing}}) {
         return $me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column'
-            if !blessed $fld and exists $fld->[2]{AS} and $col eq $fld->[2]{AS};
+            if ref($fld) eq 'ARRAY' and exists $fld->[2]{AS} and $col eq $fld->[2]{AS};
     }
 }
 
 =head3 C<show>
 
   $query->show(@columns);
+  $query->show($table1, {COL => $table2 ** 'name', AS => 'name2'});
   $query->show($table1 ** 'id', {FUNC => 'UCASE(?)', COL => 'name', AS => 'alias'}, ...
 
 Specify which columns to show as an array.  If the array is empty all columns will be shown.
+If you use a Table object, all the columns from that table will be shown.
 
 =cut
 
@@ -169,7 +181,7 @@ sub show {
     undef $me->{build_data}{show};
     undef @{$me->{build_data}{Showing}};
     for my $fld (@_) {
-        if (blessed $fld and $fld->isa('DBIx::DBO::Table')) {
+        if (UNIVERSAL::isa($fld, 'DBIx::DBO::Table')) {
             ouch 'Invalid table field' unless defined $me->_table_idx($fld);
             push @{$me->{build_data}{Showing}}, $fld;
             next;
@@ -218,7 +230,7 @@ Returns the C<Table> object.
 ##
 sub join_table {
     my ($me, $tbl, $type) = @_;
-    if (blessed $tbl and $tbl->isa('DBIx::DBO::Table')) {
+    if (UNIVERSAL::isa($tbl, 'DBIx::DBO::Table')) {
         ouch 'This table is already in this query' if $me->_table_idx($tbl);
     } else {
         $tbl = $me->{DBO}->table($tbl);
@@ -261,13 +273,7 @@ sub join_on {
     my ($col2, $col2_func, $col2_opt) = $me->_parse_col_val(shift);
 
     # Validate the fields
-    for my $c (@$col1, @$col2) {
-        if (blessed $c and $c->isa('DBIx::DBO::Column')) {
-            $me->_valid_col($c);
-        } elsif (my $type = ref $c) {
-            ouch 'Invalid value type: '.$type;
-        }
-    }
+    $me->_validate_where_fields(@$col1, @$col2);
 
     # Force a new search
     undef $me->{sql};
@@ -391,13 +397,7 @@ sub where {
     my ($val, $val_func, $val_opt) = $me->_parse_val(shift, Check => 'Auto');
 
     # Validate the fields
-    for my $f (@$fld, @$val) {
-        if (blessed $f and $f->isa('DBIx::DBO::Column')) {
-            $me->_valid_col($f);
-        } elsif (my $type = ref $f) {
-            ouch 'Invalid value type: '.$type;
-        }
-    }
+    $me->_validate_where_fields(@$fld, @$val);
 
     # Force a new search
     undef $me->{sql};
@@ -423,6 +423,17 @@ If no column is provided, the I<whole> WHERE clause is removed.
 sub unwhere {
     my $me = shift;
     $me->_del_where('Where', @_);
+}
+
+sub _validate_where_fields {
+    my $me = shift;
+    for my $f (@_) {
+        if (UNIVERSAL::isa($f, 'DBIx::DBO::Column')) {
+            $me->_valid_col($f);
+        } elsif (my $type = ref $f) {
+            ouch 'Invalid value type: '.$type if $type ne 'SCALAR';
+        }
+    }
 }
 
 sub _del_where {
@@ -618,13 +629,7 @@ sub having {
     my ($val, $val_func, $val_opt) = $me->_parse_val(shift, Check => 'Auto');
 
     # Validate the fields
-    for my $f (@$fld, @$val) {
-        if (blessed $f and $f->isa('DBIx::DBO::Column')) {
-            $me->_valid_col($f);
-        } elsif (my $type = ref $f) {
-            ouch 'Invalid value type: '.$type;
-        }
-    }
+    $me->_validate_where_fields(@$fld, @$val);
 
     # Force a new search
     undef $me->{sql};
@@ -774,7 +779,7 @@ Returns a L<DBIx::DBO::Row|DBIx::DBO::Row> object or undefined if there are no m
 sub fetch {
     my $me = shift;
     # Prepare and/or execute the query if needed
-    $me->sth and ($me->{sth}{Active} or $me->run)
+    $me->sth and ($me->{sth}{Active} or exists $me->{store} or $me->run)
         or ouch $me->rdbh->errstr;
     # Detach the old record if there is still another reference to it
     my $row;
@@ -785,10 +790,23 @@ sub fetch {
         $row = $me->row;
     }
 
-    # Fetch and store the data then return the Row on success and undef on failure or no more rows
-    if ($$row->{array} = $me->{sth}->fetch) {
-        $$row->{hash} = $me->{hash};
-        return $me->{Row};
+    if ($me->{sth}{Active}) {
+        # Fetch and store the data then return the Row on success and undef on failure or no more rows
+        if ($$row->{array} = $me->{sth}->fetch) {
+            $$row->{hash} = $me->{hash};
+            return $me->{Row};
+        }
+    } else {
+        if ($me->{store}{idx} < @{$me->{store}{data}}) {
+            $$row->{array} = $me->{store}{data}[$me->{store}{idx}++];
+            while (my ($key, $idx) = each %{$me->{store}{hash_idx}}) {
+                _hv_store(%{$me->{hash}}, $key, $$row->{array}->[$idx]);
+            }
+            $$row->{hash} = $me->{hash};
+            return $me->{Row};
+        }
+        undef $$row->{array};
+        $me->{store}{idx} = 0;
     }
     $$row->{hash} = {};
     return;
@@ -831,6 +849,10 @@ sub run {
 
     my $rv = $me->_execute or return undef;
     $me->_bind_cols_to_hash;
+    if ($me->config('StoreRows')) {
+        $me->{store}{data} = $me->{sth}->fetchall_arrayref;
+        $me->{store}{idx} = 0;
+    }
     return $rv;
 }
 
@@ -845,10 +867,19 @@ sub _bind_cols_to_hash {
     my $me = shift;
     unless ($me->{hash}) {
         # Bind only to the first column of the same name
-        my $i = 1;
-        for (@{$me->{sth}{NAME}}) {
-            $me->{sth}->bind_col($i, \$me->{hash}{$_}) unless exists $me->{hash}{$_};
-            $i++;
+        if ($me->config('StoreRows')) {
+            $me->{hash} = {};
+            my $i = 0;
+            for (@{$me->{sth}{NAME}}) {
+                $me->{store}{hash_idx}{$_} = $i unless exists $me->{store}{hash_idx}{$_};
+                $i++;
+            }
+        } else {
+            my $i = 1;
+            for (@{$me->{sth}{NAME}}) {
+                $me->{sth}->bind_col($i, \$me->{hash}{$_}) unless exists $me->{hash}{$_};
+                $i++;
+            }
         }
     }
 }
@@ -940,6 +971,7 @@ sub _build_sql {
     undef $me->{hash};
     undef $me->{Row_Count};
     undef $me->{Found_Rows};
+    delete $me->{store};
     if (defined $me->{Row}) {
         if (SvREFCNT(${$me->{Row}}) > 1) {
             $me->{Row}->_detach;
@@ -977,11 +1009,23 @@ sub sth {
   $query->finish;
 
 Calls L<DBI-E<gt>finish|DBI/"finish"> on the statement handle, if it's active.
+Restarts stored queries from the first row (if created using the C<StoreRows> config).
 
 =cut
 
 sub finish {
     my $me = shift;
+    if (defined $me->{Row}) {
+        if (SvREFCNT(${$me->{Row}}) > 1) {
+            $me->{Row}->_detach;
+        } else {
+#            undef ${$me->{Row}}->{array};
+#            ${$me->{Row}}->{hash} = {};
+            undef ${$me->{Row}}{array};
+            undef %{$me->{Row}};
+        }
+    }
+    $me->{store}{idx} = 0 if exists $me->{store};
     $me->{sth}->finish if $me->{sth} and $me->{sth}{Active};
 }
 

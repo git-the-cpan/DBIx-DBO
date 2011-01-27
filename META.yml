@@ -1,18 +1,20 @@
 ---
 name: DBIx-DBO
-version: 0.09
+version: 0.10
 author:
   - 'Vernon Lyon <vlyon@cpan.org>'
 abstract: An OO interface to SQL queries and results.  Easily constructs SQL queries, and simplifies processing of the returned data.
 license: perl
 build_requires:
   File::Temp: 0
+  Module::Build: 0.28
   Test::More: 0.62
 requires:
   DBI: 1.5
   perl: 5.008001
 configure_requires:
-  Module::Build: 0.340201
+  Module::Build: 0.28
+dynamic_config: 1
 generated_by: Module::Build version 0.340201
 meta-spec:
   url: http://module-build.sourceforge.net/META-spec-v1.4.html
@@ -20,7 +22,7 @@ meta-spec:
 provides:
   DBIx::DBO:
     file: lib/DBIx/DBO.pm
-    version: 0.09
+    version: 0.10
   DBIx::DBO::Query:
     file: lib/DBIx/DBO/Query.pm
   DBIx::DBO::Row:

@@ -4,16 +4,14 @@ use 5.008;
 use strict;
 use warnings;
 use DBI;
-use DBIx::DBO::Common;
-use DBIx::DBO::Table;
-use DBIx::DBO::Query;
-use DBIx::DBO::Row;
 
+our $VERSION;
 our @ISA;
 my $need_c3_initialize;
 my @ConnectArgs;
 
 BEGIN {
+    $VERSION = '0.10';
     # The C3 method resolution order is required.
     if ($] < 5.009_005) {
         require MRO::Compat;
@@ -22,13 +20,14 @@ BEGIN {
     }
 }
 
+use DBIx::DBO::Common;
+use DBIx::DBO::Table;
+use DBIx::DBO::Query;
+use DBIx::DBO::Row;
+
 =head1 NAME
 
 DBIx::DBO - An OO interface to SQL queries and results.  Easily constructs SQL queries, and simplifies processing of the returned data.
-
-=cut
-
-our $VERSION = '0.09';
 
 =head1 SYNOPSIS
 
@@ -91,7 +90,7 @@ sub import {
     }
     while (my ($opt, $val) = splice @_, 0, 2) {
         if (exists $Config{$opt}) {
-            $Config{$opt} = $val;
+            DBIx::DBO::Common->_set_config(\%Config, $opt, $val);
         } else {
             oops "Unknown import option '$opt'";
         }
@@ -134,12 +133,12 @@ sub new {
         ouch '3rd argument to '.(caller(0))[3].' is not a HASH reference';
     }
     if (defined $dbh) {
-        ouch 'Invalid read-write database handle' unless blessed $dbh and $dbh->isa('DBI::db');
+        ouch 'Invalid read-write database handle' unless UNIVERSAL::isa($dbh, 'DBI::db');
         $new->{dbh} = $dbh;
         $new->{dbd} ||= $dbh->{Driver}{Name};
     }
     if (defined $rdbh) {
-        ouch 'Invalid read-only database handle' unless blessed $rdbh and $rdbh->isa('DBI::db');
+        ouch 'Invalid read-only database handle' unless UNIVERSAL::isa($rdbh, 'DBI::db');
         ouch 'The read-write and read-only connections must use the same DBI driver'
             if $dbh and $dbh->{Driver}{Name} ne $rdbh->{Driver}{Name};
         $new->{rdbh} = $rdbh;
@@ -155,7 +154,7 @@ sub new {
 sub connect {
     my $me = shift;
     my $conn;
-    if (blessed $me) {
+    if (ref $me) {
         ouch 'DBO is already connected' if $me->{dbh};
         $me->_check_driver($_[0]) if @_;
         $conn = $me->{ConnectArgs} ||= scalar @ConnectArgs if $me->config('AutoReconnect');
@@ -171,7 +170,7 @@ sub connect {
 sub connect_readonly {
     my $me = shift;
     my $conn;
-    if (blessed $me) {
+    if (ref $me) {
         $me->{rdbh}->disconnect if $me->{rdbh};
         $me->_check_driver($_[0]) if @_;
         $conn = $me->{ConnectReadOnlyArgs} ||= scalar @ConnectArgs if $me->config('AutoReconnect');
@@ -429,20 +428,26 @@ sub _set_table_key_info {
     }
 }
 
+sub _unquote_schema_table {
+    my $me = shift;
+    # TODO: Better splitting of: schema.table or `schema`.`table` or "schema"."table"@"catalog" or ...
+    return if $_[0] !~ /^(?:"(.+)"|(.+))\.(?:"(.+)"|(.+))$/;
+    return ($1 || $2, $3 || $4);
+}
+
 sub table_info {
     my $me = shift;
     my $table = shift;
     my $schema;
     ouch 'No table name supplied' unless defined $table and length $table;
 
-    if (blessed $table and $table->isa('DBIx::DBO::Table')) {
+    if (UNIVERSAL::isa($table, 'DBIx::DBO::Table')) {
         ($schema, $table) = @$table{qw(Schema Name)};
     } else {
         if (ref $table eq 'ARRAY') {
             ($schema, $table) = @$table;
-        } elsif ($table =~ /\./) {
-            # TODO: Better splitting of: schema.table or `schema`.`table` or "schema"."table"@"catalog" or ...
-            ($schema, $table) = split /\./, $table, 2;
+        } elsif (my @unquoted = $me->_unquote_schema_table($table)) {
+            ($schema, $table) = @unquoted;
         }
         defined $schema or $schema = $me->_get_table_schema($schema, $table);
 
@@ -535,30 +540,37 @@ Get or set the global or C<DBIx::DBO> config settings.  When setting an option, 
 
 =over
 
-=item C<QuoteIdentifier>
-
-Boolean setting to control quoting of SQL identifiers (schema, table and column names).
-
-=item C<UseHandle>
-
-Set to C<'read-write'> or C<'read-only'> to force using only that handle for all operations.
-Defaults to C<false> which chooses the I<read-only> handle for reads and the I<read-write> handle otherwise.
-
-=item C<RowClass>
-
-Override the class name for new C<Row> objects. C<Row> objects created will be blessed into this class, which should inhereit from C<DBIx::DBO::Row>.
-
-=item C<DebugSQL>
-
-Set to C<1> or C<2> to warn about each SQL command executed.  C<2> adds a full stack trace.
-Defaults to C<0> (silent).
-
 =item C<AutoReconnect>
 
 Boolean setting to store the connection details for re-use.
 Before every operation the connection will be tested via ping() and reconnected automatically if needed.
 It has no effect after the connection has been made.
 Defaults to C<false>.
+
+=item C<DebugSQL>
+
+Set to C<1> or C<2> to warn about each SQL command executed.  C<2> adds a full stack trace.
+Defaults to C<0> (silent).
+
+=item C<QuoteIdentifier>
+
+Boolean setting to control quoting of SQL identifiers (schema, table and column names).
+
+=item C<RowClass>
+
+Override the class name for new C<Row> objects. C<Row> objects created will be blessed into this class, which should inhereit from C<DBIx::DBO::Row>.
+
+=item C<StoreRows>
+
+Boolean setting to cause C<Query> objects to store their entire result for re-use.
+The query will only be executed automatically once.
+To rerun the query, either explicitly call L<run|DBIx::DBO::Query/"run"> or alter the query.
+Defaults to C<false>.
+
+=item C<UseHandle>
+
+Set to C<'read-write'> or C<'read-only'> to force using only that handle for all operations.
+Defaults to C<false> which chooses the I<read-only> handle for reads and the I<read-write> handle otherwise.
 
 =back
 
@@ -571,7 +583,7 @@ Global options can also be set when C<use>'ing the module:
 sub config {
     my $me = shift;
     my $opt = shift;
-    unless (blessed $me) {
+    unless (ref $me) {
         return DBIx::DBO::Common->_set_config(\%Config, $opt, shift) if @_;
         return $Config{$opt};
     }
@@ -590,7 +602,7 @@ __END__
 =head1 SUBCLASSING
 
 C<DBIx::DBO> supports multiple inheritance.
-For this reason it's advisable that L<MRO::Compat|MRO::Compat> is installed if the perl version you are using is less than 5.9.5 as that module will ensure that the 'C3' method resolution order is used.
+For this reason L<MRO::Compat|MRO::Compat> is required if the perl version you are using is less than 5.9.5 to ensure that the 'C3' method resolution order is used.
 
 When subclassing C<DBIx::DBO::xxx>, please note that the objects created with their C<new> methods are blessed into DBD driver specific modules.
 For details on subclassing the C<Query> or C<Row> objects see: L<DBIx::DBO::Query/"SUBCLASSING"> and L<DBIx::DBO::Row/"SUBCLASSING">.
@@ -638,7 +650,7 @@ Please report any bugs or feature requests to C<bug-dbix-dbo AT rt.cpan.org>, or
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2009 Vernon Lyon, all rights reserved.
+Copyright 2009-2011 Vernon Lyon, all rights reserved.
 
 This package is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
 

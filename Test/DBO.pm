@@ -107,6 +107,8 @@ sub import {
         }
     }
 
+    DBIx::DBO->config(StoreRows => int rand 2);
+
     if (exists $opt{try_connect}) {
         try_to_connect($opt{try_connect});
     }
@@ -128,9 +130,9 @@ sub sql_err {
     my $me = shift;
     my ($cmd, $sql, @bind) = @{(Scalar::Util::reftype($me) eq 'REF' ? $$me : $me)->{LastSQL}};
     $sql =~ s/^/  /mg;
-    my @err = ("SQL command failed: $cmd", $sql.';');
-    push @err, 'Bind Values: ('.join(', ', map $me->rdbh->quote($_), @bind).')' if @bind;
-    push @err, $me->rdbh->errstr || '???';
+    my @err = ($DBI::errstr || $me->rdbh->errstr || '???');
+    unshift @err, 'Bind Values: ('.join(', ', map $me->rdbh->quote($_), @bind).')' if @bind;
+    unshift @err, "SQL command failed: $cmd", $sql.';';
     $err[-1] =~ s/ at line \d+$//;
     join "\n", @err;
 }
@@ -158,6 +160,8 @@ sub connect_ok {
 
 sub basic_methods {
     my $dbo = shift;
+
+    note 'Testing with: StoreRows => '.DBIx::DBO->config('StoreRows');
 
     # Create a DBO from DBI handles
     isa_ok(DBIx::DBO->new($dbo->{dbh}, $dbo->{rdbh}), 'DBIx::DBO', 'Method DBIx::DBO->new, $dbo');
@@ -241,10 +245,10 @@ sub basic_methods {
     is $t->fetch_value($t ** 'name', id => 3), 'Uncle Arnie', 'Method DBIx::DBO::Table->fetch_value';
 
     # Fetch one value from the Table
-    is_deeply $t->fetch_hash(id => 3), {id=>3,name=>'Uncle Arnie'}, 'Method DBIx::DBO::Table->fetch_hash';
+    is_deeply $t->fetch_hash(id => \3), {id=>3,name=>'Uncle Arnie'}, 'Method DBIx::DBO::Table->fetch_hash';
 
     # Fetch one value from the Table
-    my $r = $t->fetch_row(id => 3);
+    my $r = $t->fetch_row(id => 3, name => \'NOT NULL');
     is $r->{name}, 'Uncle Arnie', 'Method DBIx::DBO::Table->fetch_row';
 
     # Fetch a column arrayref from the Table
@@ -281,6 +285,7 @@ sub advanced_table_methods {
         ok $rv, 'Method DBIx::DBO::Table->insert (advanced)';
 
         $t->insert(id => 7, name => 'Amanda Huggenkiss') or diag sql_err($t);
+        $t->insert(id => 8, name => undef) or diag sql_err($t);
 
         # Advanced delete
         $rv = $t->delete(id => \'NOT NULL', name => undef) or diag sql_err($t);
@@ -384,8 +389,16 @@ sub query_methods {
     $q->open_bracket('OR');
     $q->where('name', 'LIKE', \"'%a%'");
     $q->where('id', '!=', \1);
+    $q->where('id', '=', undef);
+    $q->open_bracket('AND');
+    $q->where('name', '<>', 'abcde');
+    $q->where('name', '!=', undef);
+    $q->where('id', 'NOT IN', [1,22,333]);
+    $q->where('id', 'NOT BETWEEN', [123,456]);
     $q->close_bracket;
-    is_deeply $q->col_arrayref({ Columns => [1] }), [4,5,6], 'Method DBIx::DBO::Query->open_bracket';
+    $q->close_bracket;
+    my $got = $q->col_arrayref({ Columns => [1] });
+    is_deeply $got, [4,5,6], 'Method DBIx::DBO::Query->open_bracket';
 
     # Reset the Query
     $q->reset;
@@ -440,10 +453,10 @@ sub advanced_query_methods {
     ok $q->where('name', 'LIKE', '%a%'), 'Method DBIx::DBO::Query->where LIKE';
     my $a = $q->col_arrayref or diag sql_err($q);
     is_deeply $a, [2,4,6,7], 'Method DBIx::DBO::Query->col_arrayref';
-    ok $q->where('id', 'BETWEEN', [2, 6]), 'Method DBIx::DBO::Query->where BETWEEN';
+    ok $q->where('id', 'BETWEEN', [2, \6]), 'Method DBIx::DBO::Query->where BETWEEN';
     $a = $q->arrayref or diag sql_err($q);
     is_deeply $a, [[2],[4],[6]], 'Method DBIx::DBO::Query->arrayref';
-    ok $q->where('name', 'NOT LIKE', '%i%'), 'Method DBIx::DBO::Query->where NOT LIKE';
+    ok $q->where('name', 'IN', ['Harry Harrelson', 'James Bond']), 'Method DBIx::DBO::Query->where IN';
     $a = $q->hashref('id') or diag sql_err($q);
     is_deeply $a, {4 => {id => 4},6 => {id => 6}}, 'Method DBIx::DBO::Query->hashref';
 
@@ -470,7 +483,7 @@ sub join_methods {
     $q->distinct(1);
     is_deeply $q->arrayref, [[1],[2],[4],[5],[6],[7]], 'Method DBIx::DBO::Query->distinct';
     $q->distinct(0);
-    $q->show;
+    $q->show($t1, $t2);
 
     # Counting rows
     $q->limit(3);
@@ -479,13 +492,17 @@ sub join_methods {
     is $q->count_rows, 3, 'Method DBIx::DBO::Query->count_rows' or diag sql_err($q);
     is $q->found_rows, 36, 'Method DBIx::DBO::Query->found_rows' or diag sql_err($q);
 
+    # JOIN
     $q->join_on($t2, $t1 ** 'id', '=', { FUNC => '?/2.0', VAL => $t2 ** 'id' });
     $q->order_by({ COL => $t1 ** 'name', ORDER => 'DESC' });
     $q->where($t1 ** 'name', '<', $t2 ** 'name', FORCE => 'OR');
     $q->where($t1 ** 'name', '>', $t2 ** 'name', FORCE => 'OR');
+    $q->where($t1 ** 'name', 'LIKE', '%');
     my $r;
+    # Oracle Can't do a SELECT * from a subquery that has "ambiguous" columns (two columns with the same name)
+    $q->show() if $dbd eq 'Oracle';
     SKIP: {
-        $q->run or diag sql_err($q) or fail 'JOIN ON' or skip 'No Left Join', 1;
+        $q->run or fail 'JOIN ON' or diag sql_err($q) or skip 'No Left Join', 1;
         $r = $q->fetch or fail 'JOIN ON' or skip 'No Left Join', 1;
 
         is_deeply \@$r, [ 1, 'John Doe', 2, 'Jane Smith' ], 'JOIN ON';
@@ -493,11 +510,11 @@ sub join_methods {
         is_deeply \@$r, [ 2, 'Jane Smith', 4, 'James Bond' ], 'Method DBIx::DBO::Row->load';
     }
 
+    # LEFT JOIN
     ($q, $t1) = $dbo->query($table);
     $t2 = $q->join_table($table, 'left');
     $q->join_on($t2, $t1 ** 'id', '=', { FUNC => '?/2.0', COL => $t2 ** 'id' });
     $q->order_by({ COL => $t1 ** 'name', ORDER => 'DESC' });
-
     if ($dbd eq 'Oracle') {
         # Oracle doesn't support LIMIT OFFSET
         $q->fetch;
