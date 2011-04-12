@@ -4,7 +4,8 @@ use strict;
 use warnings;
 use DBIx::DBO::Common;
 use Scalar::Util 'weaken';
-our @ISA;
+use Carp 'croak';
+our @ISA = qw(DBIx::DBO::Common);
 
 use overload '@{}' => sub {${$_[0]}->{array} || []}, '%{}' => sub {${$_[0]}->{hash}};
 use overload '**' => \&value, fallback => 1;
@@ -46,26 +47,20 @@ sub rdbh { ${$_[0]}->{DBO}->rdbh }
 
 sub new {
     my $proto = shift;
+    UNIVERSAL::isa($_[0], 'DBIx::DBO') or croak 'Invalid DBO Object';
     my $class = ref($proto) || $proto;
-    my $me = \{ DBO => shift, Parent => shift, array => undef, hash => {} };
-    UNIVERSAL::isa($$me->{DBO}, 'DBIx::DBO') or ouch 'Invalid DBO Object';
-    ouch 'Invalid Parent Object' unless defined $$me->{Parent};
-    $$me->{Parent} = $$me->{DBO}->table($$me->{Parent}) unless ref $$me->{Parent};
-    bless $me, $class->_set_dbd_inheritance($$me->{DBO}{dbd});
-    $me->_init;
-    return wantarray ? ($me, $me->tables) : $me;
-}
-
-sub _set_dbd_inheritance {
-    my $class = shift;
-    my $dbd = shift;
-    # Let DBIx::DBO::Row secretly inherit from DBIx::DBO::Common
-    @_ = (@ISA, 'DBIx::DBO::Common') if not @_ and $class eq __PACKAGE__;
-    $class->DBIx::DBO::Common::_set_dbd_inheritance($dbd, @_);
+    $class = $class->_set_dbd_inheritance($_[0]{dbd});
+    $class->_init(@_);
 }
 
 sub _init {
-    my $me = shift;
+    my $class = shift;
+
+    my $me = \{ DBO => shift, Parent => shift, array => undef, hash => {} };
+    croak 'Invalid Parent Object' unless defined $$me->{Parent};
+    $$me->{Parent} = $$me->_table_class->new($$me->{DBO}, $$me->{Parent}) unless ref $$me->{Parent};
+    bless $me, $class;
+
     $$me->{build_data}{LimitOffset} = [1];
     if ($$me->{Parent}->isa('DBIx::DBO::Query')) {
         $$me->{Tables} = [ @{$$me->{Parent}{Tables}} ];
@@ -82,8 +77,9 @@ sub _init {
         };
         $$me->{Tables} = [ delete $$me->{Parent} ];
     } else {
-        ouch 'Invalid Parent Object';
+        croak 'Invalid Parent Object';
     }
+    return wantarray ? ($me, $me->tables) : $me;
 }
 
 sub _copy {
@@ -125,7 +121,7 @@ sub _table_alias {
     my ($me, $tbl) = @_;
     return undef if $tbl == $me;
     my $i = $me->_table_idx($tbl);
-    ouch 'The table is not in this query' unless defined $i;
+    croak 'The table is not in this query' unless defined $i;
     @{$$me->{Tables}} > 1 ? 't'.($i + 1) : ();
 }
 
@@ -167,7 +163,7 @@ sub column {
     for my $tbl ($me->tables) {
         return $tbl->column($col) if exists $tbl->{Column_Idx}{$col};
     }
-    ouch 'No such column'.($_check_aliases ? '/alias' : '').': '.$me->_qi($col);
+    croak 'No such column'.($_check_aliases ? '/alias' : '').': '.$me->_qi($col);
 }
 
 =head3 C<value>
@@ -188,14 +184,14 @@ Values in the C<Row> can also be obtained by using the object as an array/hash r
 sub value {
     my $me = shift;
     my $col = shift;
-    ouch 'The record is empty' unless $$me->{array};
+    croak 'The record is empty' unless $$me->{array};
     if (UNIVERSAL::isa($col, 'DBIx::DBO::Column')) {
         my $i = $me->_column_idx($col);
         return $$me->{array}[$i] if defined $i;
-        ouch 'The field '.$me->_qi($col->[0]{Name}, $col->[1]).' was not included in this query';
+        croak 'The field '.$me->_qi($col->[0]{Name}, $col->[1]).' was not included in this query';
     }
     return $$me->{hash}{$col} if exists $$me->{hash}{$col};
-    ouch 'No such column: '.$col;
+    croak 'No such column: '.$col;
 }
 
 =head3 C<load>
@@ -266,7 +262,7 @@ otherwise ALL rows matching the current row will be updated.
 
 sub update {
     my $me = shift;
-    ouch 'No current record to update!' unless $$me->{array};
+    croak 'No current record to update!' unless $$me->{array};
     my $build_data = $me->_build_data_matching_this_row;
     $build_data->{LimitOffset} = [1] if $me->config('LimitRowUpdate') and $me->tables == 1;
     my $sql = $me->_build_sql_update($build_data, @_);
@@ -299,7 +295,7 @@ otherwise ALL rows matching the current row will be deleted.
 
 sub delete {
     my $me = shift;
-    ouch 'No current record to delete!' unless $$me->{array};
+    croak 'No current record to delete!' unless $$me->{array};
     my $build_data = $me->_build_data_matching_this_row;
     $build_data->{LimitOffset} = [1] if $me->config('LimitRowDelete') and $me->tables == 1;
     my $sql = $me->_build_sql_delete($build_data, @_);
@@ -316,7 +312,7 @@ sub _build_data_matching_this_row {
     for my $tbl (@{$$me->{Tables}}) {
         for my $col (map $tbl ** $_, @{$tbl->{ @{$tbl->{PrimaryKeys}} ? 'PrimaryKeys' : 'Columns' }}) {
             my $i = $me->_column_idx($col);
-            defined $i or ouch 'The '.$me->_qi($tbl->{Name}, $col->[1]).' field needed to identify this row, was not included in this query';
+            defined $i or croak 'The '.$me->_qi($tbl->{Name}, $col->[1]).' field needed to identify this row, was not included in this query';
             push @quick_where, $col => $$me->{array}[$i];
         }
     }

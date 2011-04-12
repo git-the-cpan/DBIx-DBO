@@ -76,13 +76,13 @@ sub import {
 
     # Skip tests with missing module requirements
     unless (eval { DBIx::DBO->_require_dbd_class($dbd) }) {
-        if ($@ =~ /^Can't load \Q$dbd\E driver\nCan't locate ([\w\/]+)\.pm in \@INC /) {
+        if ($@ =~ /^Can't locate ([\w\/]+)\.pm in \@INC /) {
             # Module is not installed
             ($_ = $1) =~ s'/'::'g;
-        } elsif ($@ =~ /^Can't load \Q$dbd\E driver\n([\w:]+ version [\d\.]+) required/) {
+        } elsif ($@ =~ /^([\w:]+ version [\d\.]+) required/) {
             # Module is not correct version
             ($_ = $1);
-        } elsif ($@ =~ /^Can't load \Q$dbd\E driver\n\Q$dbd_name\E is not yet supported/) {
+        } elsif ($@ =~ /^\Q$dbd_name\E is not yet supported/) {
             # DBM is not yet supported
             plan skip_all => "Can't load $dbd driver: $dbd_name is not yet supported";
         } else {
@@ -140,7 +140,13 @@ sub sql_err {
 sub connect_dbo {
     my ($dsn, $user, $pass) = @_;
     defined $dsn or $dsn = '';
-    DBIx::DBO->connect("DBI:$dbd:$dsn", $user, $pass, {RaiseError => 0});
+    # Catch install_driver errors
+    my $dbh = eval { DBIx::DBO->connect("DBI:$dbd:$dsn", $user, $pass, {RaiseError => 0}) };
+    if ($@) {
+        die $@ if $@ !~ /\binstall_driver\b/;
+        plan skip_all => $@;
+    }
+    return $dbh;
 }
 
 sub try_to_connect {
@@ -638,7 +644,7 @@ sub _get_table_info {
     my $me = shift;
     my ($schema, $table) = @_;
     # Fake table info
-    return $me->{TableInfo}{''}{$table} = $fake_table_info;
+    return $me->{TableInfo}{''}{$table} ||= $fake_table_info;
 }
 
 1;

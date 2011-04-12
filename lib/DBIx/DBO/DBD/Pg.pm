@@ -3,7 +3,7 @@ use warnings;
 
 package # hide from PAUSE
     DBIx::DBO::DBD::Pg;
-use DBIx::DBO::Common;
+use Carp 'croak';
 
 sub _get_table_schema {
     my $me = shift;
@@ -18,7 +18,7 @@ sub _get_table_schema {
         'TABLE,VIEW,GLOBAL TEMPORARY,LOCAL TEMPORARY,SYSTEM TABLE')->fetchall_arrayref({});
     # Then if we found nothing, try any type
     $info = $me->rdbh->table_info(undef, $q_schema, $q_table)->fetchall_arrayref if $info and @$info == 0;
-    ouch 'Invalid table: '.$me->_qi($table) unless $info and @$info == 1 and $info->[0]{pg_table} eq $table;
+    croak 'Invalid table: '.$me->_qi($table) unless $info and @$info == 1 and $info->[0]{pg_table} eq $table;
     return $info->[0]{pg_schema};
 }
 
@@ -31,7 +31,7 @@ sub _get_table_info {
     $q_table =~ s/([\\_%])/\\$1/g;
 
     my $cols = $me->rdbh->column_info(undef, $q_schema, $q_table, '%')->fetchall_arrayref({});
-    ouch 'Invalid table: '.$me->_qi($table) unless @$cols;
+    croak 'Invalid table: '.$me->_qi($table) unless @$cols;
 
     my %h;
     $h{Column_Idx}{$_->{pg_column}} = $_->{ORDINAL_POSITION} for @$cols;
@@ -59,7 +59,7 @@ sub table_info {
     my $me = shift;
     my $schema = '';
     my $table = shift;
-    ouch 'No table name supplied' unless defined $table and length $table;
+    croak 'No table name supplied' unless defined $table and length $table;
 
     if (UNIVERSAL::isa($table, 'DBIx::DBO::Table')) {
         ($schema, $table) = @$table{qw(Schema Name)};
