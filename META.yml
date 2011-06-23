@@ -1,6 +1,6 @@
 ---
 name: DBIx-DBO
-version: 0.11
+version: 0.12
 author:
   - 'Vernon Lyon <vlyon@cpan.org>'
 abstract: An OO interface to SQL queries and results.  Easily constructs SQL queries, and simplifies processing of the returned data.
@@ -22,7 +22,7 @@ meta-spec:
 provides:
   DBIx::DBO:
     file: lib/DBIx/DBO.pm
-    version: 0.11
+    version: 0.12
   DBIx::DBO::Query:
     file: lib/DBIx/DBO/Query.pm
   DBIx::DBO::Row:
@@ -32,4 +32,4 @@ provides:
 resources:
   bugtracker: "http://rt.cpan.org/Public/Dist/Display.html?Name=DBIx-DBO"
   license: http://dev.perl.org/licenses/
-  repository: http://vlyon.svn.beanstalkapp.com/src/dbo
+  repository: https://vlyon.svn.beanstalkapp.com/src/dbo

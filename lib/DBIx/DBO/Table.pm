@@ -22,7 +22,7 @@ DBIx::DBO::Table - An OO interface to SQL queries and results.  Encapsulates a t
   
   # Quickly display my employee id
   print $table->fetch_value('employee_id', name => 'Vernon');
-
+  
   # Find the IDs of fired employees
   my @fired = @{ $table->fetch_column('id', status => 'fired');
   
@@ -34,7 +34,7 @@ DBIx::DBO::Table - An OO interface to SQL queries and results.  Encapsulates a t
 
 =head1 DESCRIPTION
 
-C<Table> objects are mostly used for column references in a C<Query>.
+C<Table> objects are mostly used for column references in a L<Query|DBIx::DBO::Query>.
 They can also be used for INSERTs, DELETEs and simple lookups (fetch_*).
 
 =head1 METHODS
@@ -84,6 +84,16 @@ sub _quoted_name {
     defined $me->{_quoted_name} ? $me->{_quoted_name} : ($me->{_quoted_name} = $me->_qi(@$me{qw(Schema Name)}));
 }
 
+=head3 C<columns>
+
+Return a list of column names.
+
+=cut
+
+sub columns {
+    @{$_[0]->{Columns}};
+}
+
 =head3 C<column>
 
   $table->column($column_name);
@@ -108,7 +118,7 @@ sub _valid_col {
 
 =head3 C<row>
 
-Returns a new L<DBIx::DBO::Row|DBIx::DBO::Row> object for this table.
+Returns a new L<Row|DBIx::DBO::Row> object for this table.
 
 =cut
 
@@ -121,7 +131,7 @@ sub row {
 
   $table->fetch_row(%where);
 
-Fetch the first matching row from the table returning it as a L<DBIx::DBO::Row|DBIx::DBO::Row> object.
+Fetch the first matching row from the table returning it as a L<Row|DBIx::DBO::Row> object.
 
 The C<%where> is a hash of field/value pairs.  The value can be a SCALAR ref, which will be used without quoting.
 

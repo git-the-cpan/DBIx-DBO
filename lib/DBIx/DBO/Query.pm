@@ -58,7 +58,7 @@ A C<Query> object represents rows from a database (from one or more tables). Thi
 
 Create a new C<Query> object from the tables specified.
 In scalar context, just the C<Query> object will be returned.
-In list context, the C<Query> object and L<DBIx::DBO::Table|DBIx::DBO::Table> objects will be returned for each table specified.
+In list context, the C<Query> object and L<Table|DBIx::DBO::Table> objects will be returned for each table specified.
 
 =cut
 
@@ -72,7 +72,7 @@ sub new {
 
 sub _init {
     my $class = shift;
-    my $me = { DBO => shift, sql => undef };
+    my $me = { DBO => shift, sql => undef, Columns => [] };
     croak 'No table specified in new Query' unless @_;
     bless $me, $class;
 
@@ -102,18 +102,18 @@ sub reset {
     $me->group_by;
     $me->order_by;
     $me->limit;
+    # FIXME: Should we be deleting this?
     delete $me->{Config};
 }
 
 =head3 C<tables>
 
-Return a list of L<DBIx::DBO::Table|DBIx::DBO::Table> objects for this query.
+Return a list of L<Table|DBIx::DBO::Table> objects for this query.
 
 =cut
 
 sub tables {
-    my $me = shift;
-    @{$me->{Tables}};
+    @{$_[0]->{Tables}};
 }
 
 sub _table_idx {
@@ -131,6 +131,16 @@ sub _table_alias {
     croak 'The table is not in this query' unless defined $i;
     # Don't use aliases, when there's only 1 table
     @{$me->{Tables}} > 1 ? 't'.($i + 1) : ();
+}
+
+=head3 C<columns>
+
+Return a list of column names.
+
+=cut
+
+sub columns {
+    @{$_[0]->{Columns}};
 }
 
 =head3 C<column>
@@ -215,7 +225,7 @@ sub distinct {
   $query->join_table([$schema, $table], $join_type);
   $query->join_table($table_object, $join_type);
 
-Join a table onto the query, creating a L<DBIx::DBO::Table|DBIx::DBO::Table> object if needed.
+Join a table onto the query, creating a L<Table|DBIx::DBO::Table> object if needed.
 This will perform a comma (", ") join unless $join_type is specified.
 
 Valid join types are any accepted by the DB.  Eg: C<'JOIN'>, C<'LEFT'>, C<'RIGHT'>, C<undef> (for comma join), C<'INNER'>, C<'OUTER'>, ...
@@ -377,7 +387,7 @@ C<ORDER> => To order by a column (Used only in C<group_by> and C<order_by>).
 
 =back
 
-Multiple C<where> expressions are combined I<cleverly> using the preferred aggregator C<'AND'> (unless L<open_bracket|/open_bracket__close_bracket> was used to change this).  So that when you add where expressions to the query, they will be C<AND>ed together.  However some expressions that refer to the same column will automatically be C<OR>ed instead where this makes sense, currently: C<'='>, C<'IS NULL'>, C<E<lt>=E<gt>>, C<IN> and C<'BETWEEN'>.  Similarly, when the preferred aggregator is C<'OR'> the following operators will be C<AND>ed together: C<'!='>, C<'IS NOT NULL'>, C<E<lt>E<gt>>, C<NOT IN> and C<'NOT BETWEEN'>.
+Multiple C<where> expressions are combined I<cleverly> using the preferred aggregator C<'AND'> (unless L<open_bracket|/open_bracket__close_bracket> was used to change this).  So that when you add where expressions to the query, they will be C<AND>ed together.  However some expressions that refer to the same column will automatically be C<OR>ed instead where this makes sense, currently: C<'='>, C<'IS NULL'>, C<'E<lt>=E<gt>'>, C<'IN'> and C<'BETWEEN'>.  Similarly, when the preferred aggregator is C<'OR'> the following operators will be C<AND>ed together: C<'!='>, C<'IS NOT NULL'>, C<'E<lt>E<gt>'>, C<'NOT IN'> and C<'NOT BETWEEN'>.
 
   $query->where('id', '=', 5);
   $query->where('name', '=', 'Bob');
@@ -771,41 +781,37 @@ sub col_arrayref {
 
 Fetch the next row from the query.  This will run/rerun the query if needed.
 
-Returns a L<DBIx::DBO::Row|DBIx::DBO::Row> object or undefined if there are no more rows.
+Returns a L<Row|DBIx::DBO::Row> object or undefined if there are no more rows.
 
 =cut
 
 sub fetch {
-    my $me = shift;
+    my $me = $_[0];
     # Prepare and/or execute the query if needed
-    $me->sth and ($me->{sth}{Active} or exists $me->{store} or $me->run)
+    $me->_sth and ($me->{Active} or $me->run)
         or croak $me->rdbh->errstr;
-    # Detach the old record if there is still another reference to it
-    my $row;
+    # Detach the old row if there is still another reference to it
     if (defined $me->{Row} and SvREFCNT(${$me->{Row}}) > 1) {
         $me->{Row}->_detach;
-        $row = $me->row;
-    } else {
-        $row = $me->row;
     }
 
-    if ($me->{sth}{Active}) {
+    my $row = $me->row;
+    if (exists $me->{cache}) {
+        if ($me->{cache}{idx} < @{$me->{cache}{data}}) {
+            @{$me->{cache}{array}}[0..$#{$me->{cache}{array}}] = @{$me->{cache}{data}[$me->{cache}{idx}++]};
+            $$row->{array} = $me->{cache}{array};
+            $$row->{hash} = $me->{hash};
+            return $row;
+        }
+        undef $$row->{array};
+        $me->{cache}{idx} = 0;
+    } else {
         # Fetch and store the data then return the Row on success and undef on failure or no more rows
         if ($$row->{array} = $me->{sth}->fetch) {
             $$row->{hash} = $me->{hash};
-            return $me->{Row};
+            return $row;
         }
-    } else {
-        if ($me->{store}{idx} < @{$me->{store}{data}}) {
-            $$row->{array} = $me->{store}{data}[$me->{store}{idx}++];
-            while (my ($key, $idx) = each %{$me->{store}{hash_idx}}) {
-                _hv_store(%{$me->{hash}}, $key, $$row->{array}->[$idx]);
-            }
-            $$row->{hash} = $me->{hash};
-            return $me->{Row};
-        }
-        undef $$row->{array};
-        $me->{store}{idx} = 0;
+        $me->{Active} = 0;
     }
     $$row->{hash} = {};
     return;
@@ -815,12 +821,12 @@ sub fetch {
 
   my $row = $query->row;
 
-Returns the L<DBIx::DBO::Row|DBIx::DBO::Row> object for the current row from the query or an empty L<DBIx::DBO::Row|DBIx::DBO::Row> object if there is no current row.
+Returns the L<Row|DBIx::DBO::Row> object for the current row from the query or an empty L<Row|DBIx::DBO::Row> object if there is no current row.
 
 =cut
 
 sub row {
-    my $me = shift;
+    my $me = $_[0];
     $me->sql; # Build the SQL and detach the Row if needed
     $me->{Row} ||= $me->_row_class->new($me->{DBO}, $me);
 }
@@ -838,15 +844,18 @@ sub run {
     my $me = shift;
     $me->sql; # Build the SQL and detach the Row if needed
     if (defined $me->{Row}) {
-        undef ${$me->{Row}}->{array};
-        ${$me->{Row}}->{hash} = {};
+        undef ${$me->{Row}}{array};
+        undef %{$me->{Row}};
     }
 
     my $rv = $me->_execute or return undef;
+    $me->{Active} = 1;
     $me->_bind_cols_to_hash;
-    if ($me->config('StoreRows')) {
-        $me->{store}{data} = $me->{sth}->fetchall_arrayref;
-        $me->{store}{idx} = 0;
+    if ($me->config('CacheQuery')) {
+        $me->{cache}{data} = $me->{sth}->fetchall_arrayref;
+        $me->{cache}{idx} = 0;
+    } else {
+        delete $me->{cache};
     }
     return $rv;
 }
@@ -854,7 +863,7 @@ sub run {
 sub _execute {
     my $me = shift;
     $me->_sql($me->sql, $me->_bind_params_select($me->{build_data}));
-    $me->sth or return;
+    $me->_sth or return;
     $me->{sth}->execute($me->_bind_params_select($me->{build_data}));
 }
 
@@ -862,18 +871,20 @@ sub _bind_cols_to_hash {
     my $me = shift;
     unless ($me->{hash}) {
         # Bind only to the first column of the same name
-        if ($me->config('StoreRows')) {
-            $me->{hash} = {};
+        @{$me->{Columns}} = @{$me->{sth}{NAME}};
+        if ($me->config('CacheQuery')) {
+            @{$me->{cache}{array}} = (undef) x @{$me->{Columns}};
+            $me->{hash} = \my %hash;
             my $i = 0;
-            for (@{$me->{sth}{NAME}}) {
-                $me->{store}{hash_idx}{$_} = $i unless exists $me->{store}{hash_idx}{$_};
+            for (@{$me->{Columns}}) {
+                _hv_store(%hash, $_, $me->{cache}{array}[$i]) unless exists $hash{$_};
                 $i++;
             }
         } else {
-            my $i = 1;
-            for (@{$me->{sth}{NAME}}) {
-                $me->{sth}->bind_col($i, \$me->{hash}{$_}) unless exists $me->{hash}{$_};
+            my $i;
+            for (@{$me->{Columns}}) {
                 $i++;
+                $me->{sth}->bind_col($i, \$me->{hash}{$_}) unless exists $me->{hash}{$_};
             }
         }
     }
@@ -892,9 +903,9 @@ sub rows {
     my $me = shift;
     $me->sql; # Ensure the Row_Count is cleared if needed
     unless (defined $me->{Row_Count}) {
-        $me->sth and ($me->{sth}{Executed} or $me->run)
+        $me->_sth and ($me->{sth}{Executed} or $me->run)
             or croak $me->rdbh->errstr;
-        $me->{Row_Count} = $me->sth->rows;
+        $me->{Row_Count} = $me->_sth->rows;
         $me->{Row_Count} = $me->count_rows if $me->{Row_Count} == -1;
     }
     $me->{Row_Count};
@@ -951,13 +962,13 @@ sub found_rows {
 
   my $sql = $query->sql;
 
-Returns the SQL query statement string.
+Returns the SQL statement string.
 
 =cut
 
 sub sql {
     my $me = shift;
-    $me->{sql} ||= $me->_build_sql;
+    $me->{sql} || $me->_build_sql;
 }
 
 sub _build_sql {
@@ -966,7 +977,8 @@ sub _build_sql {
     undef $me->{hash};
     undef $me->{Row_Count};
     undef $me->{Found_Rows};
-    delete $me->{store};
+    delete $me->{cache};
+    $me->{Active} = 0;
     if (defined $me->{Row}) {
         if (SvREFCNT(${$me->{Row}}) > 1) {
             $me->{Row}->_detach;
@@ -979,20 +991,14 @@ sub _build_sql {
             return $me->{sql};
         }
     }
+    undef @{$me->{Columns}};
 
     $me->{sql} = $me->_build_sql_select($me->{build_data});
 }
 
-=head3 C<sth>
-
-  my $sth = $query->sth;
-
-Reutrns the C<DBI> statement handle from the query.
-This will run/rerun the query if needed.
-
-=cut
-
-sub sth {
+# Get the DBI statement handle for the query.
+# It may not have been executed yet.
+sub _sth {
     my $me = shift;
     # Ensure the sql is rebuilt if needed
     my $sql = $me->sql;
@@ -1004,7 +1010,8 @@ sub sth {
   $query->finish;
 
 Calls L<DBI-E<gt>finish|DBI/"finish"> on the statement handle, if it's active.
-Restarts stored queries from the first row (if created using the C<StoreRows> config).
+Restarts cached queries from the first row (if created using the C<CacheQuery> config).
+This ensures that the next call to L</fetch> will return the first row from the query.
 
 =cut
 
@@ -1014,14 +1021,16 @@ sub finish {
         if (SvREFCNT(${$me->{Row}}) > 1) {
             $me->{Row}->_detach;
         } else {
-#            undef ${$me->{Row}}->{array};
-#            ${$me->{Row}}->{hash} = {};
             undef ${$me->{Row}}{array};
             undef %{$me->{Row}};
         }
     }
-    $me->{store}{idx} = 0 if exists $me->{store};
-    $me->{sth}->finish if $me->{sth} and $me->{sth}{Active};
+    if (exists $me->{cache}) {
+        $me->{cache}{idx} = 0;
+    } else {
+        $me->{sth}->finish if $me->{sth} and $me->{sth}{Active};
+        $me->{Active} = 0;
+    }
 }
 
 =head2 Common Methods

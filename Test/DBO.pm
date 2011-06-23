@@ -74,15 +74,22 @@ sub import {
     grep $_ eq $dbd, DBI->available_drivers
         or plan skip_all => "No $dbd driver available!";
 
+    # Catch install_driver errors
+    eval { DBI->install_driver($dbd) };
+    if ($@) {
+        die $@ if $@ !~ /\binstall_driver\b/;
+        plan skip_all => $@;
+    }
+
     # Skip tests with missing module requirements
     unless (eval { DBIx::DBO->_require_dbd_class($dbd) }) {
-        if ($@ =~ /^Can't locate ([\w\/]+)\.pm in \@INC /) {
+        if ($@ =~ /^Can't locate ([\w\/]+)\.pm in \@INC /m) {
             # Module is not installed
             ($_ = $1) =~ s'/'::'g;
-        } elsif ($@ =~ /^([\w:]+ version [\d\.]+) required/) {
+        } elsif ($@ =~ /^([\w:]+ version [\d\.]+) required/m) {
             # Module is not correct version
             ($_ = $1);
-        } elsif ($@ =~ /^\Q$dbd_name\E is not yet supported/) {
+        } elsif ($@ =~ /^\Q$dbd_name\E is not yet supported/m) {
             # DBM is not yet supported
             plan skip_all => "Can't load $dbd driver: $dbd_name is not yet supported";
         } else {
@@ -107,7 +114,8 @@ sub import {
         }
     }
 
-    DBIx::DBO->config(StoreRows => int rand 2);
+    # Query tests must produce the same result regardless of caching
+    DBIx::DBO->config(CacheQuery => defined $ENV{DBO_CACHE_QUERY} ? $ENV{DBO_CACHE_QUERY} : int rand 2);
 
     if (exists $opt{try_connect}) {
         try_to_connect($opt{try_connect});
@@ -140,13 +148,7 @@ sub sql_err {
 sub connect_dbo {
     my ($dsn, $user, $pass) = @_;
     defined $dsn or $dsn = '';
-    # Catch install_driver errors
-    my $dbh = eval { DBIx::DBO->connect("DBI:$dbd:$dsn", $user, $pass, {RaiseError => 0}) };
-    if ($@) {
-        die $@ if $@ !~ /\binstall_driver\b/;
-        plan skip_all => $@;
-    }
-    return $dbh;
+    DBIx::DBO->connect("DBI:$dbd:$dsn", $user, $pass, {RaiseError => 0});
 }
 
 sub try_to_connect {
@@ -167,7 +169,7 @@ sub connect_ok {
 sub basic_methods {
     my $dbo = shift;
 
-    note 'Testing with: StoreRows => '.DBIx::DBO->config('StoreRows');
+    note 'Testing with: CacheQuery => '.DBIx::DBO->config('CacheQuery');
 
     # Create a DBO from DBI handles
     isa_ok(DBIx::DBO->new($dbo->{dbh}, $dbo->{rdbh}), 'DBIx::DBO', 'Method DBIx::DBO->new, $dbo');
@@ -220,6 +222,11 @@ sub basic_methods {
 
     pass 'Method DBIx::DBO->do';
 
+    ok my $table_info = $dbo->table_info([$test_sch, $test_tbl]), 'Method DBIx::DBO->table_info';
+    is $table_info, $dbo->table_info($quoted_table), 'Method DBIx::DBO->table_info (quoted)';
+    is $table_info, $dbo->table_info(defined $test_sch ? "$test_sch.$test_tbl" : $test_tbl),
+        'Method DBIx::DBO->table_info (unquoted)';
+
     # Insert data
     $dbo->do("INSERT INTO $quoted_table VALUES (1, 'John Doe')") or diag sql_err($dbo);
     $dbo->do("INSERT INTO $quoted_table VALUES (?, ?)", undef, 2, 'Jane Smith') or diag sql_err($dbo);
@@ -238,6 +245,8 @@ sub basic_methods {
     # Insert via table object
     $rv = $t->insert(id => 3, name => 'Uncle Arnie') or diag sql_err($t);
     ok $rv, 'Method DBIx::DBO::Table->insert';
+
+    is_deeply [$t->columns], [qw(id name)], 'Method DBIx::DBO::Table->columns';
 
     # Create a column object
     my $c = $t->column('id');
@@ -312,10 +321,17 @@ sub row_methods {
     my $dbo = shift;
     my $t = shift;
 
-    my $r = $dbo->row($t);
-    isa_ok $r, 'DBIx::DBO::Row', '$r';
+    my $r = DBIx::DBO::Row->new($dbo, $t->_quoted_name);
+    isa_ok $r, 'DBIx::DBO::Row', '$r (using quoted table name)';
+
+    $r = $dbo->row([ @$t{qw(Schema Name)} ]);
+    isa_ok $r, 'DBIx::DBO::Row', '$r (using table name array)';
+
+    $r = $dbo->row($t);
+    isa_ok $r, 'DBIx::DBO::Row', '$r (using Table object)';
 
     is $$r->{array}, undef, 'Row is empty';
+    is_deeply [$r->columns], [qw(id name)], 'Method DBIx::DBO::Row->columns';
 
     ok $r->load(id => 2, name => 'Jane Smith'), 'Method DBIx::DBO::Row->load' or diag sql_err($r);
     is_deeply $$r->{array}, [ 2, 'Jane Smith' ], 'Row loaded correctly';
@@ -349,7 +365,7 @@ sub query_methods {
     pass 'Method DBIx::DBO::Query->order_by';
 
     # Get a valid sth
-    isa_ok $q->sth, 'DBI::st', '$q->sth';
+    isa_ok $q->_sth, 'DBI::st', '$q->_sth';
 
     # Get a Row object
     my $r = $q->row;
@@ -374,6 +390,7 @@ sub query_methods {
     }
 
     # Access methods
+    is_deeply [$q->columns], [qw(id name)], 'Method DBIx::DBO::Query->columns';
     is $r->{name}, 'John Doe', 'Access row as a hashref';
     is $r->[0], 1, 'Access row as an arrayref';
 
@@ -444,6 +461,8 @@ sub advanced_query_methods {
     }
     is $q->fetch->{name}, 'JOHN DOE', 'Method DBIx::DBO::Query->show';
     is $q->row ** $t ** 'name', 'John Doe', 'Access specific column';
+    is_deeply [$q->row->columns], [qw(name id name)], 'Method DBIx::DBO::Row->columns (aliased)';
+    is_deeply [$q->columns], [qw(name id name)], 'Method DBIx::DBO::Query->columns (aliased)';
 
     # Show whole tables
     $q->show({ FUNC => "'who?'", AS => 'name' }, $t);
@@ -531,7 +550,7 @@ sub join_methods {
     }
 
     SKIP: {
-        $q->sth or diag sql_err($q) or fail 'LEFT JOIN' or skip 'No Left Join', 3;
+        $q->_sth or diag sql_err($q) or fail 'LEFT JOIN' or skip 'No Left Join', 3;
         $r = $q->fetch or fail 'LEFT JOIN' or skip 'No Left Join', 3;
 
         is_deeply \@$r, [ 4, 'James Bond', undef, undef ], 'LEFT JOIN';
@@ -565,10 +584,8 @@ sub cleanup {
     ok !defined $dbo->{dbh} && !defined $dbo->{rdbh}, 'Method DBIx::DBO->disconnect';
 }
 
-my @_no_recursion;
 sub Dump {
-    my $val = shift;
-    my $var = shift;
+    my($val, $var) = @_;
     if (blessed $val and !defined $var) {
         if ($val->isa('DBIx::DBO')) {
             $var = 'dbo';
@@ -583,25 +600,24 @@ sub Dump {
     $var = 'dump' unless defined $var;
     require Data::Dumper;
     my $d = Data::Dumper->new([$val], [$var]);
-    my %seen;
     if (ref $val) {
-        @_no_recursion = ($val);
-        if (reftype $val eq 'ARRAY')   { _Find_Seen(\%seen, $_) for @$val }
-        elsif (reftype $val eq 'HASH') { _Find_Seen(\%seen, $_) for values %$val }
-        elsif (reftype $val eq 'REF')  { _Find_Seen(\%seen, $$val) }
+        my %seen;
+        my @_no_recursion = ($val);
+        if (reftype $val eq 'ARRAY')   { _Find_Seen(\%seen, \@_no_recursion, $_) for @$val }
+        elsif (reftype $val eq 'HASH') { _Find_Seen(\%seen, \@_no_recursion, $_) for values %$val }
+        elsif (reftype $val eq 'REF')  { _Find_Seen(\%seen, \@_no_recursion, $$val) }
         $d->Seen(\%seen);
     }
     print $d->Dump;
 }
 
 sub _Find_Seen {
-    my $seen = shift;
-    my $val = shift;
+    my($seen, $_no_recursion, $val) = @_;
     return unless ref $val;
-    for (@_no_recursion) {
+    for (@$_no_recursion) {
         return if $val == $_;
     }
-    push @_no_recursion, $val;
+    push @$_no_recursion, $val;
 
     if (blessed $val) {
         if ($val->isa('DBIx::DBO')) {
@@ -624,9 +640,9 @@ sub _Find_Seen {
             return;
         }
     }
-    if (reftype $val eq 'ARRAY')   { _Find_Seen($seen, $_) for @$val }
-    elsif (reftype $val eq 'HASH') { _Find_Seen($seen, $_) for values %$val }
-    elsif (reftype $val eq 'REF')  { _Find_Seen($seen, $$val) }
+    if (reftype $val eq 'ARRAY')   { _Find_Seen($seen, $_no_recursion, $_) for @$val }
+    elsif (reftype $val eq 'HASH') { _Find_Seen($seen, $_no_recursion, $_) for values %$val }
+    elsif (reftype $val eq 'REF')  { _Find_Seen($seen, $_no_recursion, $$val) }
 }
 
 # When testing via Sponge, use fake tables
