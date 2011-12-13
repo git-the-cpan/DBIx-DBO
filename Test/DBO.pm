@@ -252,10 +252,6 @@ sub basic_methods {
     my $c = $t->column('id');
     isa_ok $c, 'DBIx::DBO::Column', '$c';
 
-    # Advanced insert using a column object
-    $rv = $t->insert($c => {FUNC => '4'}, name => \"'James Bond'") or diag sql_err($t);
-    ok $rv, 'Method DBIx::DBO::Table->insert (complex values)';
-
     # Fetch one value from the Table
     is $t->fetch_value($t ** 'name', id => 3), 'Uncle Arnie', 'Method DBIx::DBO::Table->fetch_value';
 
@@ -268,6 +264,11 @@ sub basic_methods {
 
     # Fetch a column arrayref from the Table
     is_deeply $t->fetch_column($t ** 'name', id => 3), ['Uncle Arnie'], 'Method DBIx::DBO::Table->fetch_column';
+
+    # Advanced insert using a column object
+    $rv = $t->insert($c => {FUNC => '4'}, name => 'NotUsed', name => \"'James Bond'") or diag sql_err($t);
+    ok $rv, 'Method DBIx::DBO::Table->insert (complex values)';
+    is $t->fetch_value('name', id => 4), 'James Bond', 'Method DBIx::DBO::Table->insert (remove duplicate cols)';
 
     # Delete via table object
     $rv = $t->delete(id => 3) or diag sql_err($t);
@@ -284,6 +285,25 @@ sub basic_methods {
         is $t->last_insert_id, 5, 'Method DBIx::DBO::Table->last_insert_id'
             or $t->delete(name => 'Vernon Lyon'), $t->insert(id => 5, name => 'Vernon Lyon');
     }
+
+    # Bulk insert
+    my @bulk_data = ({id=>6,name=>'Bulk Insert'},{id=>7,name=>'Bulk Insert'});
+
+    $rv = $t->bulk_insert(rows => [map [@$_{qw(id name)}], @bulk_data]) or diag sql_err($t);
+    is $rv, 2, 'Method DBIx::DBO::Table->bulk_insert (ARRAY)';
+    $t->delete(name => 'Bulk Insert') or diag sql_err($t);
+
+    $rv = $t->bulk_insert(rows => \@bulk_data) or diag sql_err($t);
+    is $rv, 2, 'Method DBIx::DBO::Table->bulk_insert (HASH)';
+    $t->delete(name => 'Bulk Insert') or diag sql_err($t);
+
+    $rv = $t->bulk_insert(columns => [qw(name id)], rows => [map [@$_{qw(name id)}], @bulk_data]) or diag sql_err($t);
+    is $rv, 2, 'Method DBIx::DBO::Table->bulk_insert (ARRAY)';
+    $t->delete(name => 'Bulk Insert') or diag sql_err($t);
+
+    $rv = $t->bulk_insert(columns => [qw(name id)], rows => \@bulk_data) or diag sql_err($t);
+    is $rv, 2, 'Method DBIx::DBO::Table->bulk_insert (HASH)';
+    $t->delete(name => 'Bulk Insert') or diag sql_err($t);
 
     return $t;
 }
@@ -421,7 +441,7 @@ sub query_methods {
     $q->close_bracket;
     $q->close_bracket;
     my $got = $q->col_arrayref({ Columns => [1] });
-    is_deeply $got, [4,5,6], 'Method DBIx::DBO::Query->open_bracket';
+    is_deeply $got, [4,5,6], 'Method DBIx::DBO::Query->open_bracket' or diag sql_err($q);
 
     # Reset the Query
     $q->reset;

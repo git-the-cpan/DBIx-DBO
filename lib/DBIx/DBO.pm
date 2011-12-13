@@ -13,7 +13,7 @@ my $need_c3_initialize;
 my @ConnectArgs;
 
 BEGIN {
-    $VERSION = '0.12';
+    $VERSION = '0.13';
     # The C3 method resolution order is required.
     if ($] < 5.009_005) {
         require MRO::Compat;
@@ -194,11 +194,12 @@ sub connect_readonly {
 }
 
 sub _check_driver {
-    my $me = shift;
-    my $dsn = shift;
+    my($me, $dsn) = @_;
+
     my $driver = (DBI->parse_dsn($dsn))[1] or
         croak "Can't connect to data source '$dsn' because I can't work out what driver to use " .
             "(it doesn't seem to contain a 'dbi:driver:' prefix and the DBI_DRIVER env var is not set)";
+
     ref($me) =~ /::DBD::\Q$driver\E$/ or
     $driver eq $me->{dbd} or
         croak "Can't connect to the data source '$dsn'\n" .
@@ -207,10 +208,8 @@ sub _check_driver {
 
 sub _connect {
     my $me = shift;
-    my $conn = shift;
-    # If a conn index is given then store the connection args
-    $conn = $ConnectArgs[$conn] if defined $conn;
-    $conn ||= [];
+    my $conn_idx = shift;
+    my @conn;
 
     if (@_) {
         my ($dsn, $user, $auth, $attr) = @_;
@@ -229,9 +228,13 @@ sub _connect {
 
         # AutoCommit is always on
         %attr = (PrintError => 0, RaiseError => 1, %attr, AutoCommit => 1);
-        @$conn = ($dsn, $user, $auth, \%attr);
+        @conn = ($dsn, $user, $auth, \%attr);
     }
-    DBI->connect(@$conn);
+    # If a conn index is given then store the connection args
+    $ConnectArgs[$conn_idx] = \@conn if defined $conn_idx;
+
+    local @DBIx::DBO::CARP_NOT = qw(DBI);
+    DBI->connect(@conn);
 }
 
 sub _require_dbd_class {
@@ -511,7 +514,6 @@ sub dbh {
     if (my $handle = $me->config('UseHandle')) {
         return $me->_handle($handle);
     }
-    croak 'Invalid action for a read-only connection' unless $me->{dbh};
     $me->_handle('read-write');
 }
 
@@ -520,7 +522,7 @@ sub rdbh {
     if (my $handle = $me->config('UseHandle')) {
         return $me->_handle($handle);
     }
-    return $me->dbh unless $me->{rdbh};
+    return $me->dbh unless defined $me->{rdbh};
     $me->_handle('read-only');
 }
 
@@ -574,11 +576,10 @@ Global options can also be set when C<use>'ing the module:
 =cut
 
 sub config {
-    my $me = shift;
-    my $opt = shift;
-    if (@_) {
+    my($me, $opt) = @_;
+    if (@_ > 2) {
         my $cfg = ref $me ? $me->{Config} ||= {} : \%Config;
-        return $me->_set_config($cfg, $opt, shift);
+        return $me->_set_config($cfg, $opt, $_[2]);
     }
     return (ref $me and defined $me->{Config}{$opt}) ? $me->{Config}{$opt} : $Config{$opt};
 }

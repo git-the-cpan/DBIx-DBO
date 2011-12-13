@@ -502,9 +502,10 @@ sub _add_where {
         if defined $opt{FORCE} and $opt{FORCE} ne 'AND' and $opt{FORCE} ne 'OR';
 
     # Deal with NULL values
+    $op = '<>' if $op eq '!='; # Use the valid SQL op
     if (@$val == 1 and !defined $val->[0] and !defined $val_func) {
         if ($op eq '=') { $op = 'IS'; $val_func = 'NULL'; delete $val->[0]; }
-        elsif ($op eq '!=') { $op = 'IS NOT'; $val_func = 'NULL'; delete $val->[0]; }
+        elsif ($op eq '<>') { $op = 'IS NOT'; $val_func = 'NULL'; delete $val->[0]; }
     }
 
     # Deal with array values: BETWEEN & IN
@@ -719,8 +720,7 @@ You can specify a slice by including a 'Slice' or 'Columns' attribute in C<%attr
 =cut
 
 sub arrayref {
-    my $me = shift;
-    my $attr = shift;
+    my($me, $attr) = @_;
     $me->_sql($me->sql, $me->_bind_params_select($me->{build_data}));
     $me->rdbh->selectall_arrayref($me->{sql}, $attr, $me->_bind_params_select($me->{build_data}));
 }
@@ -736,9 +736,7 @@ C<$key_field> defines which column, or columns, are used as keys in the returned
 =cut
 
 sub hashref {
-    my $me = shift;
-    my $key = shift;
-    my $attr = shift;
+    my($me, $key, $attr) = @_;
     $me->_sql($me->sql, $me->_bind_params_select($me->{build_data}));
     $me->rdbh->selectall_hashref($me->{sql}, $key, $attr, $me->_bind_params_select($me->{build_data}));
 }
@@ -753,8 +751,7 @@ Run the query using L<DBI-E<gt>selectcol_arrayref|DBI/"selectcol_arrayref"> whic
 =cut
 
 sub col_arrayref {
-    my $me = shift;
-    my $attr = shift;
+    my($me, $attr) = @_;
     $me->_sql($me->sql, $me->_bind_params_select($me->{build_data}));
     my $sth = $me->rdbh->prepare($me->{sql}, $attr) or return;
     unless (defined $attr->{Columns}) {
