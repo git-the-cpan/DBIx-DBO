@@ -33,6 +33,12 @@ BEGIN {
         DBIx::DBO->config(DebugSQL => $ENV{DBO_DEBUG_SQL});
     }
 
+    # Set up $Carp::Verbose if requested
+    if ($ENV{DBO_CARP_VERBOSE}) {
+        diag "DBO_CARP_VERBOSE=$ENV{DBO_CARP_VERBOSE}";
+        $Carp::Verbose = $ENV{DBO_CARP_VERBOSE};
+    }
+
     # Store the last SQL executed, and show debug info
     {
         package DBIx::DBO::Common;
@@ -423,25 +429,43 @@ sub query_methods {
     is $r->value($t->column('name')), 'Jane Smith', 'Access row via method DBIx::DBO::Row::value';
     is $r ** $t ** 'name', 'Jane Smith', 'Access row via shortcut method **';
 
+    # Re-run the query
+    $q->run or diag sql_err($q);
+    is $q->fetch->{name}, 'John Doe', 'Method DBIx::DBO::Query->run';
+    $q->finish;
+    is $q->fetch->{name}, 'John Doe', 'Method DBIx::DBO::Query->finish';
+
     # Count the number of rows
     1 while $q->fetch;
     is $q->rows, 6, 'Row count is 6';
 
+    # WHERE clause
+    ok $q->where('name', 'LIKE', \"'%o%'"), 'Method DBIx::DBO::Query->where' or diag sql_err($q);
+
     # Parentheses
-    $q->where('name', 'LIKE', \"'%o%'");
     $q->open_bracket('OR');
     $q->where('name', 'LIKE', \"'%a%'");
     $q->where('id', '!=', \1);
     $q->where('id', '=', undef);
     $q->open_bracket('AND');
-    $q->where('name', '<>', 'abcde');
-    $q->where('name', '!=', undef);
+    $q->where('id', '<>', 12345);
+    $q->where('id', '!=', undef);
     $q->where('id', 'NOT IN', [1,22,333]);
     $q->where('id', 'NOT BETWEEN', [123,456]);
-    $q->close_bracket;
-    $q->close_bracket;
     my $got = $q->col_arrayref({ Columns => [1] });
     is_deeply $got, [4,5,6], 'Method DBIx::DBO::Query->open_bracket' or diag sql_err($q);
+
+    my $old_sql = $q->sql;
+    $q->unwhere('name');
+    is $q->sql, $old_sql, 'Method DBIx::DBO::Query->unwhere (before close_bracket)';
+
+    $q->close_bracket;
+    $q->close_bracket;
+    $q->unwhere('name');
+    isnt $q->sql, $old_sql, 'Method DBIx::DBO::Query->close_bracket';
+
+    $got = $q->col_arrayref({ Columns => [1] });
+    is_deeply $got, [2,4,5,6,7], 'Method DBIx::DBO::Query->unwhere';
 
     # Reset the Query
     $q->reset;
@@ -470,16 +494,18 @@ sub advanced_query_methods {
     $q->reset;
 
     # Show specific columns only
-    $q->show({ FUNC => 'UPPER(?)', COL => 'name', AS => 'name' }, 'id', 'name');
     SKIP: {
         unless ($can{collate}) {
             $q->order_by('id');
+            $q->run or diag sql_err($q);
             skip 'COLLATE is not supported', 1;
         }
         $q->order_by({ COL => 'id', COLLATE => $can{collate} });
-        pass 'Method DBIx::DBO::Query->order_by COLLATE';
+        ok $q->run, 'Method DBIx::DBO::Query->order_by COLLATE' or diag sql_err($q);
     }
-    is $q->fetch->{name}, 'JOHN DOE', 'Method DBIx::DBO::Query->show';
+    $q->show({ FUNC => 'UPPER(?)', COL => 'name', AS => 'name' }, 'id', 'name');
+    ok $q->run && $q->fetch->{name} eq 'JOHN DOE', 'Method DBIx::DBO::Query->show' or diag sql_err($q);
+
     is $q->row ** $t ** 'name', 'John Doe', 'Access specific column';
     is_deeply [$q->row->columns], [qw(name id name)], 'Method DBIx::DBO::Row->columns (aliased)';
     is_deeply [$q->columns], [qw(name id name)], 'Method DBIx::DBO::Query->columns (aliased)';
@@ -619,6 +645,8 @@ sub Dump {
     }
     $var = 'dump' unless defined $var;
     require Data::Dumper;
+    local $Data::Dumper::Sortkeys = 1;
+    local $Data::Dumper::Quotekeys = 0;
     my $d = Data::Dumper->new([$val], [$var]);
     if (ref $val) {
         my %seen;

@@ -60,8 +60,8 @@ sub new {
 
 sub _init {
     my($class, $dbo, $table) = @_;
-    (my $schema, $table, my $me) = $dbo->table_info($table) or croak 'No such table: '.$table;
-    bless { %$me, Schema => $schema, Name => $table, DBO => $dbo, LastInsertID => undef }, $class;
+    (my $schema, $table, my $info) = $dbo->table_info($table) or croak 'No such table: '.$table;
+    bless { %$info, Schema => $schema, Name => $table, DBO => $dbo, LastInsertID => undef }, $class;
 }
 
 =head3 C<tables>
@@ -118,7 +118,7 @@ sub _valid_col {
 
 =head3 C<row>
 
-Returns a new L<Row|DBIx::DBO::Row> object for this table.
+Returns a new empty L<Row|DBIx::DBO::Row> object for this table.
 
 =cut
 
@@ -133,9 +133,11 @@ sub row {
 
 Fetch the first matching row from the table returning it as a L<Row|DBIx::DBO::Row> object.
 
-The C<%where> is a hash of field/value pairs.  The value can be a SCALAR ref, which will be used without quoting.
+The C<%where> is a hash of field/value pairs.
+The value can be a SCALAR reference, which will be used without quoting, or an ARRAY reference for multiple C<IN> values.
 
-  $someone = $table->fetch_row(name => \'NOT NULL', age => 21, join_date => \'CURDATE()', end_date => undef);
+  $someone = $table->fetch_row(age => 21, join_date => \'CURDATE()', end_date => undef);
+  $a_child = $table->fetch_row(name => \'NOT NULL', age => [5 .. 15]);
 
 =cut
 
