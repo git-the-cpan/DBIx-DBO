@@ -7,27 +7,34 @@ use DBI;
 use Carp qw(carp croak);
 
 our $VERSION;
-our @ISA = qw(DBIx::DBO::Common);
-our %Config;
+our %Config = (
+    AutoReconnect => 0,
+    DebugSQL => 0,
+    QuoteIdentifier => 1,
+    CacheQuery => 0,
+);
 my $need_c3_initialize;
 my @ConnectArgs;
 
 BEGIN {
-    $VERSION = '0.14';
+    $VERSION = '0.20';
     # The C3 method resolution order is required.
     if ($] < 5.009_005) {
         require MRO::Compat;
     } else {
         require mro;
     }
-    # Import %Config
-    *Config = \%DBIx::DBO::Common::Config;
 }
 
-use DBIx::DBO::Common;
+use DBIx::DBO::DBD;
 use DBIx::DBO::Table;
 use DBIx::DBO::Query;
 use DBIx::DBO::Row;
+
+sub _dbd_class   { 'DBIx::DBO::DBD' }
+sub _table_class { 'DBIx::DBO::Table' }
+sub _query_class { 'DBIx::DBO::Query' }
+sub _row_class   { 'DBIx::DBO::Row' }
 
 =head1 NAME
 
@@ -92,9 +99,9 @@ sub import {
         my $opt = pop;
         carp "Import option '$opt' passed without a value";
     }
-    while (my ($opt, $val) = splice @_, 0, 2) {
+    while (my($opt, $val) = splice @_, 0, 2) {
         if (exists $Config{$opt}) {
-            DBIx::DBO::Common->_set_config(\%Config, $opt, $val);
+            DBIx::DBO::DBD->_set_config(\%Config, $opt, $val);
         } else {
             carp "Unknown import option '$opt'";
         }
@@ -131,7 +138,7 @@ Both C<connect> & C<connect_readonly> can be called on a C<DBIx::DBO> object to 
 sub new {
     my $me = shift;
     croak 'Too many arguments for '.(caller(0))[3] if @_ > 3;
-    my ($dbh, $rdbh, $new) = @_;
+    my($dbh, $rdbh, $new) = @_;
 
     if (defined $new and not UNIVERSAL::isa($new, 'HASH')) {
         croak '3rd argument to '.(caller(0))[3].' is not a HASH reference';
@@ -149,15 +156,12 @@ sub new {
         $new->{dbd} ||= $rdbh->{Driver}{Name};
     }
     croak "Can't create the DBO, unknown database driver" unless $new->{dbd};
-
-    my $class = $me->_require_dbd_class($new->{dbd});
-    Class::C3::initialize() if $need_c3_initialize;
-    $class->_init($new);
+    $new->{dbd_class} = $me->_dbd_class->_require_dbd_class($new->{dbd});
+    $me->_init($new);
 }
 
 sub _init {
-    my $class = shift;
-    my $new = shift;
+    my($class, $new) = @_;
     bless $new, $class;
 }
 
@@ -212,7 +216,7 @@ sub _connect {
     my @conn;
 
     if (@_) {
-        my ($dsn, $user, $auth, $attr) = @_;
+        my($dsn, $user, $auth, $attr) = @_;
         my %attr = %$attr if ref($attr) eq 'HASH';
 
         # Add a stack trace to PrintError & RaiseError
@@ -235,57 +239,6 @@ sub _connect {
 
     local @DBIx::DBO::CARP_NOT = qw(DBI);
     DBI->connect(@conn);
-}
-
-sub _require_dbd_class {
-    my $me = shift;
-    my $dbd = shift;
-    $me = ref $me if ref $me;
-    $me =~ s/::DBD::\w+$//;
-    my $class = $me.'::DBD::'.$dbd;
-
-    __PACKAGE__->_require_dbd_class($dbd) if $me ne __PACKAGE__;
-
-    my $rv;
-    my @warn;
-    {
-        local $SIG{__WARN__} = sub { push @warn, join '', @_ };
-        $rv = eval "require $class";
-    }
-    if ($rv) {
-        warn @warn if @warn;
-        return $me->_set_dbd_inheritance($dbd);
-    }
-
-    (my $file = $class.'.pm') =~ s'::'/'g;
-    if ($@ !~ / \Q$file\E in \@INC /) {
-        (my $err = $@) =~ s/\n.*$//; # Remove the last line
-        chomp @warn;
-        chomp $err;
-        croak join "\n", @warn, $err, "Can't load $dbd driver";
-    }
-
-    $@ = '';
-    delete $INC{$file};
-    $INC{$file} = 1;
-    return $me->_set_dbd_inheritance($dbd);
-}
-
-sub _set_dbd_inheritance {
-    my $class = shift;
-    my $dbd = shift;
-
-    my $dbd_class = $class->SUPER::_set_dbd_inheritance($dbd);
-
-    # Delay Class::C3::initialize until later
-    local *Class::C3::initialize;
-    *Class::C3::initialize = sub { $need_c3_initialize = 1 };
-
-    for my $obj_class (map $dbd_class->$_, qw(_table_class _query_class _row_class)) {
-        $obj_class->_set_dbd_inheritance($dbd);
-    }
-
-    return $dbd_class;
 }
 
 =head3 C<table>
@@ -313,7 +266,7 @@ Create a new L<Query|DBIx::DBO::Query> object from the tables specified.
 In scalar context, just the C<Query> object will be returned.
 In list context, the C<Query> object and L<Table|DBIx::DBO::Table> objects will be returned for each table specified.
 
-  my ($query, $table1, $table2) = $dbo->query(['my_schema', 'my_table'], 'my_other_table');
+  my($query, $table1, $table2) = $dbo->query(['my_schema', 'my_table'], 'my_other_table');
 
 =cut
 
@@ -355,21 +308,33 @@ This provides access to the L<DBI-E<gt>selectall_arrayref|DBI/"selectall_arrayre
 =cut
 
 sub selectrow_array {
-    my ($me, $sql, $attr) = splice @_, 0, 3;
-    $me->_sql($sql, @_);
-    $me->rdbh->selectrow_array($sql, $attr, @_);
+    my $me = shift;
+    $me->{dbd_class}->_selectrow_array($me, @_);
 }
 
 sub selectrow_arrayref {
-    my ($me, $sql, $attr) = splice @_, 0, 3;
-    $me->_sql($sql, @_);
-    $me->rdbh->selectrow_arrayref($sql, $attr, @_);
+    my $me = shift;
+    $me->{dbd_class}->_selectrow_arrayref($me, @_);
 }
 
 sub selectall_arrayref {
-    my ($me, $sql, $attr) = splice @_, 0, 3;
-    $me->_sql($sql, @_);
-    $me->rdbh->selectall_arrayref($sql, $attr, @_);
+    my $me = shift;
+    $me->{dbd_class}->_selectall_arrayref($me, @_);
+}
+
+=head3 C<do>
+
+  $dbo->do($statement)         or die $dbo->dbh->errstr;
+  $dbo->do($statement, \%attr) or die $dbo->dbh->errstr;
+  $dbo->do($statement, \%attr, @bind_values) or die ...
+
+This provides access to the L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using the I<read-write> C<DBI> handle.
+
+=cut
+
+sub do {
+    my $me = shift;
+    $me->{dbd_class}->_do($me, @_);
 }
 
 =head3 C<table_info>
@@ -383,75 +348,19 @@ Mainly for internal use.
 
 =cut
 
-sub _get_table_schema {
-    my $me = shift;
-    my $schema = my $q_schema = shift;
-    my $table = my $q_table = shift;
-
-    $q_schema =~ s/([\\_%])/\\$1/g if defined $q_schema;
-    $q_table =~ s/([\\_%])/\\$1/g;
-
-    # First try just these types
-    my $info = $me->rdbh->table_info(undef, $q_schema, $q_table,
-        'TABLE,VIEW,GLOBAL TEMPORARY,LOCAL TEMPORARY,SYSTEM TABLE')->fetchall_arrayref;
-    # Then if we found nothing, try any type
-    $info = $me->rdbh->table_info(undef, $q_schema, $q_table)->fetchall_arrayref if $info and @$info == 0;
-    croak 'Invalid table: '.$me->_qi($table) unless $info and @$info == 1 and $info->[0][2] eq $table;
-    return $info->[0][1];
-}
-
-sub _get_table_info {
-    my $me = shift;
-    my $schema = shift;
-    my $table = shift;
-
-    my $cols = $me->rdbh->column_info(undef, $schema, $table, '%')->fetchall_arrayref({});
-    croak 'Invalid table: '.$me->_qi($table) unless @$cols;
-
-    my %h;
-    $h{Column_Idx}{$_->{COLUMN_NAME}} = $_->{ORDINAL_POSITION} for @$cols;
-    $h{Columns} = [ sort { $h{Column_Idx}{$a} cmp $h{Column_Idx}{$b} } keys %{$h{Column_Idx}} ];
-
-    $h{PrimaryKeys} = [];
-    $me->_set_table_key_info($schema, $table, \%h);
-
-    $me->{TableInfo}{defined $schema ? $schema : ''}{$table} = \%h;
-}
-
-sub _set_table_key_info {
-    my $me = shift;
-    my $schema = shift;
-    my $table = shift;
-    my $h = shift;
-    if (my $keys = $me->rdbh->primary_key_info(undef, $schema, $table)) {
-        $h->{PrimaryKeys}[$_->{KEY_SEQ} - 1] = $_->{COLUMN_NAME} for @{$keys->fetchall_arrayref({})};
-    }
-}
-
-sub _unquote_table {
-    my $me = shift;
-    # TODO: Better splitting of: schema.table or `schema`.`table` or "schema"."table"@"catalog" or ...
-    $_[0] =~ /^(?:("|)(.+)\1\.|)("|)(.+)\3$/ or croak "Invalid table: \"$_[0]\"";
-    return ($4, $2);
-}
-
 sub table_info {
-    my $me = shift;
-    my $table = shift;
-    my $schema;
+    my($me, $table) = @_;
     croak 'No table name supplied' unless defined $table and length $table;
 
+    my $schema;
     if (UNIVERSAL::isa($table, 'DBIx::DBO::Table')) {
         ($schema, $table) = @$table{qw(Schema Name)};
     } else {
-        if (ref $table eq 'ARRAY') {
-            ($schema, $table) = @$table;
-        } else {
-            ($table, $schema) = $me->_unquote_table($table);
-        }
-        defined $schema or $schema = $me->_get_table_schema($schema, $table);
+        ($schema, $table) = ref $table eq 'ARRAY' ? @$table : $me->{dbd_class}->_unquote_table($me, $table);
+        defined $schema or $schema = $me->{dbd_class}->_get_table_schema($me, $schema, $table);
 
-        $me->_get_table_info($schema, $table) unless exists $me->{TableInfo}{defined $schema ? $schema : ''}{$table};
+        $me->{dbd_class}->_get_table_info($me, $schema, $table)
+            unless exists $me->{TableInfo}{defined $schema ? $schema : ''}{$table};
     }
     return ($schema, $table, $me->{TableInfo}{defined $schema ? $schema : ''}{$table});
 }
@@ -473,13 +382,16 @@ sub disconnect {
         undef $me->{rdbh};
     }
     delete $me->{TableInfo};
-    delete $me->{LastSQL};
     return;
 }
 
 =head2 Common Methods
 
 These methods are accessible from all DBIx::DBO* objects.
+
+=head3 C<dbo>
+
+This C<DBO> object.
 
 =head3 C<dbh>
 
@@ -489,20 +401,14 @@ The I<read-write> C<DBI> handle.
 
 The I<read-only> C<DBI> handle, or if there is no I<read-only> connection, the I<read-write> C<DBI> handle.
 
-=head3 C<do>
-
-  $dbo->do($statement)         or die $dbo->dbh->errstr;
-  $dbo->do($statement, \%attr) or die $dbo->dbh->errstr;
-  $dbo->do($statement, \%attr, @bind_values) or die ...
-
-This provides access to the L<DBI-E<gt>do|DBI/"do"> method.  It defaults to using the I<read-write> C<DBI> handle.
-
 =cut
+
+sub dbo { $_[0] }
 
 sub _handle {
     my $me = shift;
     my $handle = shift;
-    my ($d, $c) = $handle ne 'read-only' ? qw(dbh ConnectArgs) : qw(rdbh ConnectReadOnlyArgs);
+    my($d, $c) = $handle ne 'read-only' ? qw(dbh ConnectArgs) : qw(rdbh ConnectReadOnlyArgs);
     croak "No $handle handle connected" unless defined $me->{$d};
     # Automatically reconnect, but only if possible and needed
     $me->{$d} = $me->_connect($me->{$c}) if exists $me->{$c} and not $me->{$d}->ping;
@@ -533,7 +439,7 @@ sub rdbh {
   $dbo_setting = $dbo->config($option);
   $dbo->config($option => $dbo_setting);
 
-Get or set the global or C<DBIx::DBO> config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the global value is returned.
+Get or set the global or this C<DBIx::DBO> config settings.  When setting an option, the previous value is returned.  When getting an option's value, if the value is undefined, the global value is returned.
 
 =head2 Available C<config> options
 
@@ -578,10 +484,30 @@ Global options can also be set when C<use>'ing the module:
 sub config {
     my($me, $opt) = @_;
     if (@_ > 2) {
-        my $cfg = ref $me ? $me->{Config} ||= {} : \%Config;
-        return $me->_set_config($cfg, $opt, $_[2]);
+        return ref $me
+            ? $me->{dbd_class}->_set_config($me->{Config} ||= {}, $opt, $_[2])
+            : $me->_dbd_class->_set_config(\%Config, $opt, $_[2]);
     }
-    return (ref $me and defined $me->{Config}{$opt}) ? $me->{Config}{$opt} : $Config{$opt};
+    return ref $me
+        ? $me->{dbd_class}->_get_config($opt, $me->{Config} ||= {}, \%Config)
+        : $me->_dbd_class->_get_config($opt, \%Config);
+}
+
+sub STORABLE_freeze {
+    my $me = $_[0];
+    return unless ref $me->{dbh} or ref $me->{rdbh};
+
+    my($dbh, $rdbh) = @$me{qw(dbh rdbh)};
+    $me->{dbh} = "$me->{dbh}" if defined $me->{dbh};
+    $me->{rdbh} = "$me->{rdbh}" if defined $me->{rdbh};
+    my $frozen = Storable::nfreeze($me);
+    @$me{qw(dbh rdbh)} = ($dbh, $rdbh);
+    return $frozen;
+}
+
+sub STORABLE_thaw {
+    my($me, $cloning, $frozen) = @_;
+    %$me = %{ Storable::thaw($frozen) };
 }
 
 sub DESTROY {
@@ -603,45 +529,40 @@ C<DBIx::DBO> can be subclassed like any other object oriented module.
   our @ISA = qw(DBIx::DBO);
   ...
 
-The C<DBIx::DBO> modules use multiple inheritance, because objects created are blessed into DBD driver specific classes.
-For this to function correctly they must use the 'C3' method resolution order.
-To simplify subclassing this is automatically set for you when the objects are first created.
+The C<DBIx::DBO> object is used to create C<Table>, C<Query> and C<Row> objects.
+The classes these objects are blessed into are provided by C<_table_class>, C<_query_class> & C<_row_class> methods.
+So to subclass all the C<DBIx::DBO::*> objects, we need to provide our own class names via those methods.
 
-For example, if using MySQL and a subclass of C<DBIx::DBO> named C<MySubClass>, then the object returned from the L</connect>, L</connect_readonly> or L</new> method would be blessed into C<MySubClass::DBD::mysql> which would inherit from both C<MySubClass> and C<DBIx::DBO::DBD::mysql>.
-These classes are automatically created if they don't exist.
-
-In this way it is fairly trivial to override most of the methods, but not all of them.
-This is because some methods are common to all the classes and are defined in C<DBIx::DBO::Common>.
-And new C<Table>, C<Query> and C<Row> objects created will still be blessed into C<DBIx::DBO::*> classes.
-The classes these new objects are blessed into are provided by C<_table_class>, C<_query_class> and C<_row_class> methods.
-To override these methods and subclass the whole of C<DBIx::DBO::*>, we need to provide our own C<MySubClass::Common> package with new class names for our objects.
-
-  package MySubClass::Common;
-  our @ISA = qw(DBIx::DBO::Common);
+  package MySubClass;
+  our @ISA = qw(DBIx::DBO);
   
   sub _table_class { 'MySubClass::Table' }
   sub _query_class { 'MySubClass::Query' }
   sub _row_class   { 'MySubClass::Row' }
-
-Also ensure that we inherit from this common class.
-
-  package MySubClass;
-  our @ISA = qw(DBIx::DBO MySubClass::Common);
+  
   ...
 
-  package MySubClass::Table;
-  our @ISA = qw(DBIx::DBO::Table MySubClass::Common);
+  package MySubClass::Table
+  our @ISA = qw(DBIx::DBO::Table);
+  
   ...
 
-  package MySubClass::Query;
-  our @ISA = qw(DBIx::DBO::Query MySubClass::Common);
-  ...
+Now all new objects created will be blessed into these classes.
 
-  package MySubClass::Row;
-  our @ISA = qw(DBIx::DBO::Row MySubClass::Common);
-  ...
+This leaves only the C<DBIx::DBO::DBD> hidden class, which acts as a SQL engine.
+This class is also determined in the same way as other objects,
+so to subclass C<DBIx::DBO::DBD> add a C<_dbd_class> method to C<DBIx::DBO> with the new class name.
 
-In this example we will have subclassed all the modules.
+  sub _dbd_class { 'MySubClass::DBD' }
+
+Since databases differ slightly in their SQL, this class contains all the SQL specific calls for different DBDs.
+They are found in the class C<DBIx::DBO::DBD::xxx> where I<xxx> is the name of the driver for this DBI handle.
+A MySQL connection would have a DBD class of C<DBIx::DBO::DBD::mysql>, and SQLite would use C<DBIx::DBO::DBD::SQLite>.
+These classes would both inherit from C<DBIx::DBO::DBD>.
+
+When subclassing C<DBIx::DBO::DBD>, because it uses multiple inheritance, the 'C3' method resolution order is required.
+This is setup for you automatically when the connection is first made.
+These classes are also automatically created if they don't exist.
 
 =head1 AUTHOR
 
@@ -679,7 +600,7 @@ Please report any bugs or feature requests to C<bug-dbix-dbo AT rt.cpan.org>, or
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2009-2011 Vernon Lyon, all rights reserved.
+Copyright 2009-2012 Vernon Lyon, all rights reserved.
 
 This package is free software; you can redistribute it and/or modify it under the same terms as Perl itself.
 
@@ -691,4 +612,3 @@ L<DBI>, L<DBIx::SearchBuilder>.
 
 =cut
 
-1;
