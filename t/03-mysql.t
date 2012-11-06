@@ -10,7 +10,7 @@ $dbo ||= Test::DBO::connect_dbo('test', 'root') || Test::DBO::connect_dbo('test'
         or plan skip_all => "Can't connect: $DBI::errstr";
 
 my $quoted_db = $dbo->{dbd_class}->_qi($dbo, $Test::DBO::test_db);
-if ($dbo->do("CREATE DATABASE $quoted_db CHARACTER SET utf8")) {
+if ($dbo->do("CREATE DATABASE $quoted_db")) {
     Test::DBO::todo_cleanup("DROP DATABASE $quoted_db");
     $dbo->do("USE $quoted_db");
 } else {
@@ -22,7 +22,7 @@ if ($dbo->do("CREATE DATABASE $quoted_db CHARACTER SET utf8")) {
     $quoted_db = $dbo->{dbd_class}->_qi($dbo, $Test::DBO::test_db);
 }
 
-plan tests => 98;
+plan tests => 107;
 
 # Create the DBO (3 tests)
 pass "Connect to MySQL $quoted_db database";
@@ -34,9 +34,21 @@ $Test::DBO::test_sch = $Test::DBO::test_db;
 $Test::DBO::can{collate} = 'BINARY';
 $Test::DBO::can{multi_table_update} = 1;
 $Test::DBO::can{auto_increment_id} = 'INT NOT NULL AUTO_INCREMENT PRIMARY KEY';
+$Test::DBO::can{truncate} = 1;
 
-# Table methods: do, select* (22 tests)
+# Table methods: do, select* (28 tests)
 my $t = Test::DBO::basic_methods($dbo);
+
+# Pick a random available collation
+if (my $collation = $dbo->selectrow_hashref('SHOW TABLE STATUS LIKE ?', undef, scalar($t->name))->{Collation}) {
+    if (my $charset = $dbo->selectrow_hashref('SHOW COLLATION LIKE ?', undef, $collation)->{Charset}) {
+        note "Table's default character set and collation is '$charset', '$collation'";
+        if (my $ci = $dbo->selectall_arrayref('SHOW COLLATION LIKE ?', {Slice => {}}, $charset.'%')) {
+            my @ci = grep $_ ne $collation, map $_->{Collation}, @$ci;
+            $Test::DBO::can{collate} = $ci[int rand @ci];
+        }
+    }
+}
 
 # Advanced table methods: insert, update, delete (2 tests)
 Test::DBO::advanced_table_methods($dbo, $t);
@@ -44,7 +56,7 @@ Test::DBO::advanced_table_methods($dbo, $t);
 # Row methods: (15 tests)
 Test::DBO::row_methods($dbo, $t);
 
-# Query methods: (24 tests)
+# Query methods: (29 tests)
 my $q = Test::DBO::query_methods($dbo, $t);
 
 # MySQL CalcFoundRows: (2 tests)
@@ -54,10 +66,10 @@ like $q->sql, qr/ SQL_CALC_FOUND_ROWS /, 'Use SQL_CALC_FOUND_ROWS in MySQL';
 $q->found_rows;
 is $q->{LastSQL}[1], 'SELECT FOUND_ROWS()', 'Use FOUND_ROWS() in MySQL';
 
-# Advanced query methods: (11 tests)
+# Advanced query methods: (15 tests)
 Test::DBO::advanced_query_methods($dbo, $t, $q);
 
-# Join methods: (10 tests)
+# Join methods: (12 tests)
 Test::DBO::join_methods($dbo, $t->{Name});
 
 END {

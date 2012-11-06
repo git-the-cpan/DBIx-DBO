@@ -101,6 +101,7 @@ sub reset {
     $me->show;
     $me->group_by;
     $me->order_by;
+    $me->unhaving;
     $me->limit;
     # FIXME: Should we be deleting this?
     delete $me->{Config};
@@ -191,7 +192,7 @@ sub show {
     undef @{$me->{build_data}{Showing}};
     for my $fld (@_) {
         if (UNIVERSAL::isa($fld, 'DBIx::DBO::Table')) {
-            croak 'Invalid table field' unless defined $me->_table_idx($fld);
+            croak 'Invalid table to show' unless defined $me->_table_idx($fld);
             push @{$me->{build_data}{Showing}}, $fld;
             next;
         }
@@ -285,9 +286,12 @@ sub join_on {
     undef $me->{sql};
     undef $me->{build_data}{from};
 
+    # Find the current Join_On reference
+    my $ref = $me->{build_data}{Join_On}[$i] ||= [];
+    $ref = $ref->[$_] for (@{$me->{Join_Bracket_Refs}[$i]});
+
     $me->{build_data}{Join}[$i] = ' JOIN ' if $me->{build_data}{Join}[$i] eq ', ';
-    $me->_add_where($me->{build_data}{Join_On}[$i] ||= [], $op,
-        $col1, $col1_func, $col1_opt, $col2, $col2_func, $col2_opt, @_);
+    $me->_add_where($ref, $op, $col1, $col1_func, $col1_opt, $col2, $col2_func, $col2_opt, @_);
 }
 
 =head3 C<open_join_on_bracket>, C<close_join_on_bracket>
@@ -303,13 +307,15 @@ The first argument is the table being joined onto.
 
 sub open_join_on_bracket {
     my $me = shift;
-    my $i = $me->_table_idx(shift) or croak 'No such table object in the join';
+    my $tbl = shift or croak 'Invalid table object for join on clause';
+    my $i = $me->_table_idx($tbl) or croak 'No such table object in the join';
     $me->_open_bracket($me->{Join_Brackets}[$i], $me->{Join_Bracket_Refs}[$i], $me->{build_data}{Join_On}[$i] ||= [], @_);
 }
 
 sub close_join_on_bracket {
     my $me = shift;
-    my $i = $me->_table_idx(shift) or croak 'No such table object in the join';
+    my $tbl = shift or croak 'Invalid table object for join on clause';
+    my $i = $me->_table_idx($tbl) or croak 'No such table object in the join';
     $me->_close_bracket($me->{Join_Brackets}[$i], $me->{Join_Bracket_Refs}[$i]);
 }
 
@@ -428,6 +434,7 @@ sub _del_where {
         $ref = $ref->[$_] for (@{$me->{$clause.'_Bracket_Refs'}});
 
         local $Data::Dumper::Indent = 0;
+        local $Data::Dumper::Maxdepth = 2;
         my @match = grep {
             Data::Dumper::Dumper($fld, $fld_func, $fld_opt) eq Data::Dumper::Dumper(@{$ref->[$_]}[1,2,3])
         } 0 .. $#$ref;
@@ -453,8 +460,8 @@ sub _del_where {
 
 ##
 # This will add an arrayref to the $ref given.
-# The arrayref will contain 5 values:
-#  $op, $fld_func, $fld, $val_func, $val, $force
+# The arrayref will contain 8 values:
+#  $op, $fld, $fld_func, $fld_opt, $val, $val_func, $val_opt, $force
 #  $op is the operator (those supported differ by DBD)
 #  $fld_func is undef or a scalar of the form '? AND ?' or 'POSITION(? IN ?)'
 #  $fld is an arrayref of columns/values for use with $fld_func
@@ -489,14 +496,15 @@ sub _add_where {
                 $val = [ $val ];
             }
             # Add to previous 'IN' and 'NOT IN' Where expressions
-            unless ($opt{FORCE} and $opt{FORCE} ne _op_ag($op)) {
-                for my $lim (grep $$_[0] eq $op, @{$ref}) {
-                    next if defined $$lim[1] xor defined $fld;
-                    next if defined $$lim[1] and defined $fld and $$lim[1] != $fld;
-                    last if ($$lim[5] and $$lim[5] ne _op_ag($op));
-                    last if $$lim[4] ne '('.join(',', ($me->{DBO}{dbd_class}->PLACEHOLDER) x @{$$lim[2]}).')';
-                    push @{$$lim[2]}, @$val;
-                    $$lim[4] = '('.join(',', ($me->{DBO}{dbd_class}->PLACEHOLDER) x @{$$lim[2]}).')';
+            my $op_ag = $me->{DBO}{dbd_class}->_op_ag($op);
+            unless ($opt{FORCE} and $opt{FORCE} ne $op_ag) {
+                for my $lim (grep $$_[0] eq $op, @$ref) {
+                    # $fld and $$lim[1] are always ARRAY refs
+                    next if "@{$$lim[1]}" ne "@$fld";
+                    last if $$lim[7] and $$lim[7] ne $op_ag;
+                    last if $$lim[5] ne '('.join(',', ($me->{DBO}{dbd_class}->PLACEHOLDER) x @{$$lim[4]}).')';
+                    push @{$$lim[4]}, @$val;
+                    $$lim[5] = '('.join(',', ($me->{DBO}{dbd_class}->PLACEHOLDER) x @{$$lim[4]}).')';
                     return;
                 }
             }
@@ -862,6 +870,7 @@ sub _bind_cols_to_hash {
 
 Count the number of rows returned.
 Returns undefined if the number is unknown.
+This uses the DBI C<rows> method which is unreliable in some situations (See L<DBI-E<gt>rows|DBI/"rows">).
 
 =cut
 

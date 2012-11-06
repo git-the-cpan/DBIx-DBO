@@ -17,7 +17,7 @@ my $need_c3_initialize;
 my @ConnectArgs;
 
 BEGIN {
-    $VERSION = '0.20';
+    $VERSION = '0.30';
     # The C3 method resolution order is required.
     if ($] < 5.009_005) {
         require MRO::Compat;
@@ -161,8 +161,9 @@ sub new {
 }
 
 sub _init {
-    my($class, $new) = @_;
-    bless $new, $class;
+    my($class, $me) = @_;
+    bless $me, $class;
+    $me->{dbd_class}->_init_dbo($me);
 }
 
 sub connect {
@@ -171,7 +172,14 @@ sub connect {
     if (ref $me) {
         croak 'DBO is already connected' if $me->{dbh};
         $me->_check_driver($_[0]) if @_;
-        $conn = $me->{ConnectArgs} ||= scalar @ConnectArgs if $me->config('AutoReconnect');
+        if ($me->config('AutoReconnect')) {
+            $me->{ConnectArgs} = scalar @ConnectArgs unless defined $me->{ConnectArgs};
+            $conn = $me->{ConnectArgs};
+        } else {
+            undef $ConnectArgs[$me->{ConnectArgs}] if defined $me->{ConnectArgs};
+            delete $me->{ConnectArgs};
+        }
+#        $conn = $me->{ConnectArgs} //= scalar @ConnectArgs if $me->config('AutoReconnect');
         $me->{dbh} = $me->_connect($conn, @_) or return;
         return $me;
     }
@@ -185,9 +193,16 @@ sub connect_readonly {
     my $me = shift;
     my $conn;
     if (ref $me) {
-        $me->{rdbh}->disconnect if $me->{rdbh};
+        undef $me->{rdbh};
         $me->_check_driver($_[0]) if @_;
-        $conn = $me->{ConnectReadOnlyArgs} ||= scalar @ConnectArgs if $me->config('AutoReconnect');
+        if ($me->config('AutoReconnect')) {
+            $me->{ConnectReadOnlyArgs} = scalar @ConnectArgs unless defined $me->{ConnectReadOnlyArgs};
+            $conn = $me->{ConnectReadOnlyArgs};
+        } else {
+            undef $ConnectArgs[$me->{ConnectReadOnlyArgs}] if defined $me->{ConnectReadOnlyArgs};
+            delete $me->{ConnectReadOnlyArgs};
+        }
+#        $conn = $me->{ConnectReadOnlyArgs} //= scalar @ConnectArgs if $me->config('AutoReconnect');
         $me->{rdbh} = $me->_connect($conn, @_) or return;
         return $me;
     }
@@ -233,9 +248,15 @@ sub _connect {
         # AutoCommit is always on
         %attr = (PrintError => 0, RaiseError => 1, %attr, AutoCommit => 1);
         @conn = ($dsn, $user, $auth, \%attr);
+
+        # If a conn index is given then store the connection args
+        $ConnectArgs[$conn_idx] = \@conn if defined $conn_idx;
+    } elsif (defined $conn_idx and $ConnectArgs[$conn_idx]) {
+        # If a conn index is given then retrieve the connection args
+        @conn = @{$ConnectArgs[$conn_idx]};
+    } else {
+        croak "Can't auto-connect as AutoReconnect was not set";
     }
-    # If a conn index is given then store the connection args
-    $ConnectArgs[$conn_idx] = \@conn if defined $conn_idx;
 
     local @DBIx::DBO::CARP_NOT = qw(DBI);
     DBI->connect(@conn);
@@ -276,8 +297,7 @@ sub query {
 
 =head3 C<row>
 
-  $dbo->row($table_object);
-  $dbo->row($query_object);
+  $dbo->row($table || $table_object || $query_object);
 
 Create and return a new L<Row|DBIx::DBO::Row> object.
 
@@ -287,23 +307,15 @@ sub row {
     $_[0]->_row_class->new(@_);
 }
 
-=head3 C<selectrow_array>
+=head3 C<selectrow_array>, C<selectrow_arrayref>, C<selectrow_hashref>, C<selectall_arrayref>
 
   $dbo->selectrow_array($statement, \%attr, @bind_values);
-
-This provides access to the L<DBI-E<gt>selectrow_array|DBI/"selectrow_array"> method.  It defaults to using the I<read-only> C<DBI> handle.
-
-=head3 C<selectrow_arrayref>
-
   $dbo->selectrow_arrayref($statement, \%attr, @bind_values);
-
-This provides access to the L<DBI-E<gt>selectrow_arrayref|DBI/"selectrow_arrayref"> method.  It defaults to using the I<read-only> C<DBI> handle.
-
-=head3 C<selectall_arrayref>
-
+  $dbo->selectrow_hashref($statement, \%attr, @bind_values);
   $dbo->selectall_arrayref($statement, \%attr, @bind_values);
 
-This provides access to the L<DBI-E<gt>selectall_arrayref|DBI/"selectall_arrayref"> method.  It defaults to using the I<read-only> C<DBI> handle.
+These convenience methods provide access to L<DBI-E<gt>selectrow_array|DBI/"selectrow_array">, L<DBI-E<gt>selectrow_arrayref|DBI/"selectrow_arrayref">, L<DBI-E<gt>selectrow_hashref|DBI/"selectrow_hashref">, L<DBI-E<gt>selectall_arrayref|DBI/"selectall_arrayref"> methods.
+They default to using the I<read-only> C<DBI> handle.
 
 =cut
 
@@ -315,6 +327,11 @@ sub selectrow_array {
 sub selectrow_arrayref {
     my $me = shift;
     $me->{dbd_class}->_selectrow_arrayref($me, @_);
+}
+
+sub selectrow_hashref {
+    my $me = shift;
+    $me->{dbd_class}->_selectrow_hashref($me, @_);
 }
 
 sub selectall_arrayref {

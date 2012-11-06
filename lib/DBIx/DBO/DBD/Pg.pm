@@ -7,9 +7,9 @@ use Carp 'croak';
 
 sub _get_table_schema {
     my($class, $me, $schema, $table) = @_;
+
     my $q_schema = $schema;
     my $q_table = $table;
-
     $q_schema =~ s/([\\_%])/\\$1/g if defined $q_schema;
     $q_table =~ s/([\\_%])/\\$1/g;
 
@@ -24,9 +24,9 @@ sub _get_table_schema {
 
 sub _get_column_info {
     my($class, $me, $schema, $table) = @_;
+
     my $q_schema = $schema;
     my $q_table = $table;
-
     $q_schema =~ s/([\\_%])/\\$1/g if defined $q_schema;
     $q_table =~ s/([\\_%])/\\$1/g;
 
@@ -50,6 +50,14 @@ sub _save_last_insert_id {
     my($class, $me, $sth) = @_;
 
     return $sth->{Database}->last_insert_id(undef, @$me{qw(Schema Name)}, undef);
+}
+
+# Pg doesn't allow the use of aliases in the WHERE, GROUP BY or HAVING clause
+sub _alias_preference {
+    my($class, $me, $method) = @_;
+    $method ||= ((caller(2))[3] =~ /\b(\w+)$/);
+    return 0 if $method eq 'join_on' or $method eq 'where' or $method eq 'group_by' or $method eq 'having';
+    return 1;
 }
 
 sub _bulk_insert {

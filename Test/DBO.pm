@@ -11,7 +11,7 @@ use Scalar::Util qw(blessed reftype);
 use Test::More;
 use DBIx::DBO;
 BEGIN {
-    require Carp::Heavy if $Carp::VERSION < 1.12;
+    require Carp::Heavy if eval "$Carp::VERSION < 1.12";
 
     # If we are using a version of Test::More older than 0.82 ...
     unless (exists $Test::More::{note}) {
@@ -41,9 +41,9 @@ BEGIN {
 
     # Store the last SQL executed, and show debug info
     {
-        package # hide from PAUSE
-            DBIx::DBO::DBD;
         no warnings 'redefine';
+        package # Hide from PAUSE
+            DBIx::DBO::DBD;
         *DBIx::DBO::DBD::_sql = sub {
             my $class = shift;
             my $me = shift;
@@ -61,6 +61,11 @@ BEGIN {
             my $sql = shift;
             Test::More::diag "DEBUG_SQL: $sql\nDEBUG_SQL: (".join(', ', map $me->rdbh->quote($_), @_).")\n".$trace;
         };
+        package
+            DBIx::DBO::Query;
+        *DBIx::DBO::Query::SvREFCNT = sub {
+            return Devel::Peek::SvREFCNT($_[0]) - 1;
+        } if exists $INC{'Devel/Cover.pm'};
     }
 }
 
@@ -193,7 +198,7 @@ sub basic_methods {
         pass 'Create the test table';
 
         # Create a table object
-        $t = $dbo->table([$test_sch, $test_tbl]);
+        $t = $dbo->table([undef, $test_tbl]);
         isa_ok $t, 'DBIx::DBO::Table', '$t';
 
         # Check the Primary Keys
@@ -207,7 +212,7 @@ sub basic_methods {
         todo_cleanup("DROP TABLE $quoted_table");
 
         $dbo->{dbd_class}->_get_table_info($dbo, $t->{Schema}, $t->{Name});
-        $t = $dbo->table([$test_sch, $test_tbl]);
+        $t = $t->new($dbo, [$test_sch, $test_tbl]);
     }
     else {
         diag sql_err($dbo);
@@ -227,6 +232,8 @@ sub basic_methods {
         isa_ok $t, 'DBIx::DBO::Table', '$t';
     }
     die "Couldn't create the DBIx::DBO::Table object!" unless $t;
+
+    is $t->dbo, $dbo, 'Method DBIx::DBO::Table->dbo';
 
     pass 'Method DBIx::DBO->do';
 
@@ -294,24 +301,31 @@ sub basic_methods {
             or $t->delete(name => 'Vernon Lyon'), $t->insert(id => 5, name => 'Vernon Lyon');
     }
 
+    my $bulk_data = $dbo->query($t)->arrayref({ Slice => {} });
+    SKIP: {
+        unless ($can{truncate}) {
+            $t->delete or diag sql_err($t);
+            skip 'TRUNCATE TABLE is not supported', 1;
+        }
+        $t->truncate or diag sql_err($t);
+        is $t->fetch_value('id'), undef, 'Method DBIx::DBO::Table->truncate';
+    }
+
     # Bulk insert
-    my @bulk_data = ({id=>6,name=>'Bulk Insert'},{id=>7,name=>'Bulk Insert'});
+    $rv = $t->bulk_insert(rows => [map [@$_{qw(id name)}], @$bulk_data]) or diag sql_err($t);
+    is $rv, 4, 'Method DBIx::DBO::Table->bulk_insert (ARRAY)';
+    $t->delete or diag sql_err($t);
 
-    $rv = $t->bulk_insert(rows => [map [@$_{qw(id name)}], @bulk_data]) or diag sql_err($t);
-    is $rv, 2, 'Method DBIx::DBO::Table->bulk_insert (ARRAY)';
-    $t->delete(name => 'Bulk Insert') or diag sql_err($t);
+    $rv = $t->bulk_insert(rows => \@$bulk_data) or diag sql_err($t);
+    is $rv, 4, 'Method DBIx::DBO::Table->bulk_insert (HASH)';
+    $t->delete or diag sql_err($t);
 
-    $rv = $t->bulk_insert(rows => \@bulk_data) or diag sql_err($t);
-    is $rv, 2, 'Method DBIx::DBO::Table->bulk_insert (HASH)';
-    $t->delete(name => 'Bulk Insert') or diag sql_err($t);
+    $rv = $t->bulk_insert(columns => [qw(name id)], rows => [map [@$_{qw(name id)}], @$bulk_data]) or diag sql_err($t);
+    is $rv, 4, 'Method DBIx::DBO::Table->bulk_insert (ARRAY)';
+    $t->delete or diag sql_err($t);
 
-    $rv = $t->bulk_insert(columns => [qw(name id)], rows => [map [@$_{qw(name id)}], @bulk_data]) or diag sql_err($t);
-    is $rv, 2, 'Method DBIx::DBO::Table->bulk_insert (ARRAY)';
-    $t->delete(name => 'Bulk Insert') or diag sql_err($t);
-
-    $rv = $t->bulk_insert(columns => [qw(name id)], rows => \@bulk_data) or diag sql_err($t);
-    is $rv, 2, 'Method DBIx::DBO::Table->bulk_insert (HASH)';
-    $t->delete(name => 'Bulk Insert') or diag sql_err($t);
+    $rv = $t->bulk_insert(columns => [qw(name id)], rows => \@$bulk_data) or diag sql_err($t);
+    is $rv, 4, 'Method DBIx::DBO::Table->bulk_insert (HASH)';
 
     return $t;
 }
@@ -358,6 +372,8 @@ sub row_methods {
     $r = $dbo->row($t);
     isa_ok $r, 'DBIx::DBO::Row', '$r (using Table object)';
 
+    is $r->dbo, $dbo, 'Method DBIx::DBO::Row->dbo';
+
     is $$r->{array}, undef, 'Row is empty';
     is_deeply [$r->columns], [qw(id name)], 'Method DBIx::DBO::Row->columns';
 
@@ -386,6 +402,8 @@ sub query_methods {
     # Create a query object
     my $q = $dbo->query($t);
     isa_ok $q, 'DBIx::DBO::Query', '$q';
+
+    is $q->dbo, $dbo, 'Method DBIx::DBO::Query->dbo';
 
     # Default sql = select everything
     my $sql = $q->sql;
@@ -418,10 +436,7 @@ sub query_methods {
     # Fetch the first row
     $r = $q->fetch;
     ok $r->isa('DBIx::DBO::Row'), 'Method DBIx::DBO::Query->fetch';
-    SKIP: {
-        skip "Re-use row doesn't work with Devel::Cover", 1 if exists $INC{'Devel/Cover.pm'};
-        is $r_str, "$r", 'Re-use the same row object';
-    }
+    is $r_str, "$r", 'Re-use the same row object';
 
     # Access methods
     is_deeply [$q->columns], [qw(id name)], 'Method DBIx::DBO::Query->columns';
@@ -463,6 +478,9 @@ sub query_methods {
     my $got = $q->col_arrayref({ Columns => [1] });
     is_deeply $got, [4,5,6], 'Method DBIx::DBO::Query->open_bracket' or diag sql_err($q);
 
+    $q->where('id', 'NOT IN', 4444);
+    ok scalar(() = $q->sql =~ / NOT IN /g) == 1, 'Group multiple IN & NOT IN clauses together';
+
     my $old_sql = $q->sql;
     $q->unwhere('name');
     is $q->sql, $old_sql, 'Method DBIx::DBO::Query->unwhere (before close_bracket)';
@@ -503,14 +521,11 @@ sub advanced_query_methods {
 
     # Show specific columns only
     SKIP: {
-        unless ($can{collate}) {
-            $q->order_by('id');
-            $q->run or diag sql_err($q);
-            skip 'COLLATE is not supported', 1;
-        }
-        $q->order_by({ COL => 'id', COLLATE => $can{collate} });
+        skip 'COLLATE is not supported', 1 unless $can{collate};
+        $q->order_by({ COL => 'name', COLLATE => $can{collate} });
         ok $q->run, 'Method DBIx::DBO::Query->order_by COLLATE' or diag sql_err($q);
     }
+    $q->order_by('id');
     $q->show({ FUNC => 'UPPER(?)', COL => 'name', AS => 'name' }, 'id', 'name');
     ok $q->run && $q->fetch->{name} eq 'JOHN DOE', 'Method DBIx::DBO::Query->show' or diag sql_err($q);
 
@@ -540,8 +555,20 @@ sub advanced_query_methods {
     is_deeply $a, {4 => {id => 4},6 => {id => 6}}, 'Method DBIx::DBO::Query->hashref';
 
     # HAVING clause
-    $q->show('id', 'name', { FUNC => 'CONCAT(?, ?)', COL => [qw(id name)], AS => 'combo'});
-    ok $q->having('combo', '=', '4James Bond'), 'Method DBIx::DBO::Query->having';
+    my $concat = $dbd eq 'SQLite' ? '? || ?' : 'CONCAT(?, ?)';
+    my %concat_col = (FUNC => $concat, COL => [qw(id name)]);
+    my $having_col = $dbo->{dbd_class}->_alias_preference($q, 'having') ? 'combo' : \%concat_col;
+    $q->show('id', 'name', { %concat_col, AS => 'combo'});
+    $q->group_by('id', 'name');
+    $q->having($having_col, '=', '4James Bond');
+    $q->having($having_col, '=', 'ABC-XYZ');
+    $q->having($having_col, '=', 'XYZ-ABC');
+    is_deeply [@{$q->fetch}], [4, 'James Bond', '4James Bond'], 'Method DBIx::DBO::Query->having';
+
+    $q->unhaving($having_col, '=', '4James Bond');
+    is $q->fetch, undef, 'Method DBIx::DBO::Query->unhaving';
+    $q->unhaving($having_col);
+    is_deeply [@{$q->fetch}], [4, 'James Bond', '4James Bond'], 'Method DBIx::DBO::Query->unhaving (whole column)';
 
     $q->finish;
 }
@@ -591,8 +618,17 @@ sub join_methods {
 
     # LEFT JOIN
     ($q, $t1) = $dbo->query($table);
+    # ... "t1" LEFT JOIN ... "t2"
     $t2 = $q->join_table($table, 'left');
+    # ... "t1" LEFT JOIN ... "t2" ON "t1"."id" = "t2"."id"/2.0
     $q->join_on($t2, $t1 ** 'id', '=', { FUNC => '?/2.0', COL => $t2 ** 'id' });
+    ok $q->open_join_on_bracket($t2, 'OR'), 'Method DBIx::DBO::Query->open_join_on_bracket';
+    # ... "t1" LEFT JOIN ... "t2" ON "t1"."id" = "t2"."id"/2.0 AND 1 = 2
+    $q->join_on($t2, \1, '=', \2);
+    # ... "t1" LEFT JOIN ... "t2" ON "t1"."id" = "t2"."id"/2.0 AND (1 = 2 OR 3 = 3)
+    $q->join_on($t2, \3, '=', \3);
+    ok $q->close_join_on_bracket($t2), 'Method DBIx::DBO::Query->close_join_on_bracket';
+
     $q->order_by({ COL => $t1 ** 'name', ORDER => 'DESC' });
     if ($dbd eq 'Oracle') {
         # Oracle doesn't support LIMIT OFFSET
@@ -702,7 +738,7 @@ sub _Find_Seen {
 }
 
 # When testing via Sponge, use fake tables
-package # hide from PAUSE
+package # Hide from PAUSE
     DBIx::DBO::DBD::Sponge;
 sub _get_table_schema {
     return;
@@ -714,8 +750,29 @@ my $fake_table_info = {
 };
 sub _get_table_info {
     my($class, $me, $schema, $table) = @_;
+    return $class->SUPER::_get_table_info($me, $schema, $table) if $table ne $Test::DBO::test_tbl;
     # Fake table info
     return $me->{TableInfo}{''}{$table} ||= $fake_table_info;
+}
+
+# When testing via MySponge, fake table contents
+package # Hide from PAUSE
+    MySponge::db;
+@MySponge::ISA = ('DBI');
+@MySponge::db::ISA = ('DBI::db');
+@MySponge::st::ISA = ('DBI::st');
+my @cols;
+my @rows;
+sub setup {
+    @cols = @{shift()};
+    @rows = @_;
+}
+sub prepare {
+    my($dbh, $sql, $attr) = @_;
+    $attr ||= {};
+    $attr->{NAME} ||= \@cols;
+    $attr->{rows} ||= \@rows;
+    $dbh->SUPER::prepare($sql, $attr);
 }
 
 1;

@@ -59,7 +59,7 @@ sub new {
 
 sub _init {
     my($class, $dbo, $table) = @_;
-    (my $schema, $table, my $info) = $dbo->table_info($table) or croak 'No such table: '.$table;
+    (my $schema, $table, my $info) = $dbo->table_info($table);
     bless { %$info, Schema => $schema, Name => $table, DBO => $dbo, LastInsertID => undef }, $class;
 }
 
@@ -74,8 +74,19 @@ sub tables {
 }
 
 sub _table_alias {
-    return if $_[0] == $_[1];
-    croak 'The table is not in this query';
+}
+
+=head3 C<name>
+
+  $table_name = $table->name;
+  ($schema_name, $table_name) = $table->name;
+
+In scalar context it returns the name of the table in list context the schema and table names are returned.
+
+=cut
+
+sub name {
+    wantarray ? @{$_[0]}{qw(Schema Name)} : $_[0]->{Name};
 }
 
 sub _quoted_name {
@@ -105,14 +116,10 @@ The C<**> method is a shortcut for the C<column> method.
 
 sub column {
     my($me, $col) = @_;
+    croak 'Missing argument for column' unless defined $col;
     croak 'Invalid column '.$me->{DBO}{dbd_class}->_qi($me, $col).' in table '.$me->_quoted_name
         unless exists $me->{Column_Idx}{$col};
     $me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column';
-}
-
-sub _valid_col {
-    my($me, $col) = @_;
-    return $col if $col->[0] == $me;
 }
 
 =head3 C<row>

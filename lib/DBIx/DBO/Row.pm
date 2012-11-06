@@ -5,8 +5,7 @@ use warnings;
 use Scalar::Util qw(blessed weaken);
 use Carp 'croak';
 
-use overload '@{}' => sub {${$_[0]}->{array} || []}, '%{}' => sub {${$_[0]}->{hash}};
-use overload '**' => \&value, fallback => 1;
+use overload '@{}' => sub {${$_[0]}->{array} || []}, '%{}' => sub {${$_[0]}->{hash}}, '**' => \&value, fallback => 1;
 
 sub _table_class { ${$_[0]}->{DBO}->_table_class }
 
@@ -46,14 +45,14 @@ Can take the same arguments as L<DBIx::DBO::Table/new> or a L<Query|DBIx::DBO::Q
 
 sub new {
     my $proto = shift;
-    UNIVERSAL::isa($_[0], 'DBIx::DBO') or croak 'Invalid DBO Object';
+    UNIVERSAL::isa($_[0], 'DBIx::DBO') or croak 'Invalid DBO Object for new Row';
     my $class = ref($proto) || $proto;
     $class->_init(@_);
 }
 
 sub _init {
     my($class, $dbo, $parent) = @_;
-    croak 'Invalid Parent Object' unless defined $parent;
+    croak 'Missing parent for new Row' unless defined $parent;
 
     my $me = bless \{ DBO => $dbo, array => undef, hash => {} }, $class;
     $parent = $me->_table_class->new($dbo, $parent) unless blessed $parent;
@@ -77,7 +76,7 @@ sub _init {
         $$me->{Tables} = [ $parent ];
         $$me->{Columns} = $parent->{Columns};
     } else {
-        croak 'Invalid Parent Object';
+        croak 'Invalid parent for new Row';
     }
     return wantarray ? ($me, $me->tables) : $me;
 }
@@ -152,8 +151,8 @@ sub _column_idx {
 
 =head3 C<column>
 
-  $query->column($column_name);
-  $query->column($alias_or_column_name, 1);
+  $row->column($column_name);
+  $row->column($alias_or_column_name, 1);
 
 Returns a column reference from the name or alias.
 By default only column names are searched, set the second argument to true to check column aliases and names.
@@ -191,14 +190,14 @@ Values in the C<Row> can also be obtained by using the object as an array/hash r
 
 sub value {
     my($me, $col) = @_;
-    croak 'The record is empty' unless $$me->{array};
+    croak 'The row is empty' unless $$me->{array};
     if (UNIVERSAL::isa($col, 'DBIx::DBO::Column')) {
         my $i = $me->_column_idx($col);
         return $$me->{array}[$i] if defined $i;
         croak 'The field '.$$me->{DBO}{dbd_class}->_qi($me, $col->[0]{Name}, $col->[1]).' was not included in this query';
     }
     return $$me->{hash}{$col} if exists $$me->{hash}{$col};
-    croak 'No such column: '.$col;
+    croak 'No such column: '.$$me->{DBO}{dbd_class}->_qi($me, $col);
 }
 
 =head3 C<load>
@@ -273,7 +272,7 @@ otherwise ALL rows matching the current row will be updated.
 
 sub update {
     my $me = shift;
-    croak 'No current record to update!' unless $$me->{array};
+    croak "Can't update an empty row" unless $$me->{array};
     my @update = $$me->{DBO}{dbd_class}->_parse_set($me, @_);
     my $build_data = $$me->{DBO}{dbd_class}->_build_data_matching_this_row($me);
     $build_data->{LimitOffset} = [1] if $me->config('LimitRowUpdate') and $me->tables == 1;
@@ -299,7 +298,7 @@ otherwise ALL rows matching the current row will be deleted.
 
 sub delete {
     my $me = shift;
-    croak 'No current record to delete!' unless $$me->{array};
+    croak "Can't delete an empty row" unless $$me->{array};
     my $build_data = $$me->{DBO}{dbd_class}->_build_data_matching_this_row($me);
     $build_data->{LimitOffset} = [1] if $me->config('LimitRowDelete') and $me->tables == 1;
     my $sql = $$me->{DBO}{dbd_class}->_build_sql_delete($me, $build_data, @_);
