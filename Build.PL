@@ -23,8 +23,9 @@ my %build = (
     recommends => {
         'DBD::mysql' => 4.004,
         'DBD::Pg' => 2,
-        'DBD::SQLite' => '1.30',
+        'DBD::SQLite' => 1.31,
         'DBD::Oracle' => 1.13,
+        'Storable' => 2.38,
     },
     meta_merge => {
         resources => {
@@ -55,7 +56,12 @@ Module::Build->subclass(code => q(
     sub ACTION_testcover {
         $ENV{DEVEL_COVER_OPTIONS} = '-ignore,^Test/,-coverage,all,pod-also_private-STORABLE_'
             unless exists $ENV{DEVEL_COVER_OPTIONS};
+        print "DEVEL_COVER_OPTIONS = $ENV{DEVEL_COVER_OPTIONS}\n";
         shift->SUPER::ACTION_testcover;
+    }
+    sub ACTION_test {
+        local $_[0]->{properties}{verbose} = 1 if $ENV{AUTOMATED_TESTING};
+        $_[0]->SUPER::ACTION_test;
     }
 ))->new(%build)->create_build_script();
 

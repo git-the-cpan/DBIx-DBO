@@ -3,6 +3,7 @@ abstract: 'An OO interface to SQL queries and results.  Easily constructs SQL qu
 author:
   - 'Vernon Lyon <vlyon@cpan.org>'
 build_requires:
+  ExtUtils::CBuilder: 0
   File::Temp: 0
   Module::Build: 0.30
   Test::More: 0.62
@@ -18,7 +19,7 @@ name: DBIx-DBO
 provides:
   DBIx::DBO:
     file: lib/DBIx/DBO.pm
-    version: 0.30
+    version: 0.31
   DBIx::DBO::Query:
     file: lib/DBIx/DBO/Query.pm
     version: 0
@@ -31,8 +32,9 @@ provides:
 recommends:
   DBD::Oracle: 1.13
   DBD::Pg: 2
-  DBD::SQLite: 1.30
+  DBD::SQLite: 1.31
   DBD::mysql: 4.004
+  Storable: 2.38
 requires:
   DBI: 1.50
   perl: 5.008001
@@ -40,4 +42,4 @@ resources:
   bugtracker: http://rt.cpan.org/Public/Dist/Display.html?Name=DBIx-DBO
   license: http://dev.perl.org/licenses/
   repository: https://vlyon.svn.beanstalkapp.com/src/dbo
-version: 0.30
+version: 0.31

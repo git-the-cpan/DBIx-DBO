@@ -2,7 +2,8 @@ use strict;
 use warnings;
 
 use Storable;
-use Test::DBO Sponge => 'Sponge', tests => 27;
+use Test::DBO Sponge => 'Sponge', tests => 26;
+note 'Storable v'.$Storable::VERSION;
 note 'Testing with: CacheQuery => '.DBIx::DBO->config('CacheQuery');
 
 MySponge::db::setup([qw(id name age)], [1, 'one', 1], [7, 'test', 123], [3, 'three', 333], [999, 'end', 0]);
@@ -44,7 +45,7 @@ ok $frozen = Storable::freeze($q), 'Freeze Query (after run)';
 isa_ok $thawed = Storable::thaw($frozen), 'DBIx::DBO::Query', 'Thawed';
 @{$thawed->{DBO}}{qw(dbh rdbh)} = @$dbo{qw(dbh rdbh)};
 { # Reset the active query
-    local(@$q{qw(sth Active)});
+    local(@$q{qw(sth Active hash Row)});
     is_deeply $thawed, $q, 'Same Query';
 }
 
@@ -53,8 +54,9 @@ $r = $q->fetch or die sql_err($q);
 ok $frozen = Storable::freeze($r), 'Freeze Row (after fetch)';
 isa_ok $thawed = Storable::thaw($frozen), 'DBIx::DBO::Row', 'Thawed';
 @{$$thawed->{DBO}}{qw(dbh rdbh)} = @$dbo{qw(dbh rdbh)};
-{ # Detach Parent
-    local $$r->{Parent};
+$r->_detach; # Detach from Parent
+SKIP: {
+    skip 'Storable v2.38 required to freeze attached Row objects', 1 if $Storable::VERSION < 2.38;
     is_deeply $thawed, $r, 'Same Row';
 }
 
@@ -69,10 +71,10 @@ ok $frozen = Storable::freeze($q), 'Freeze Query (after fetch)';
 isa_ok $thawed = Storable::thaw($frozen), 'DBIx::DBO::Query', 'Thawed';
 @{$thawed->{DBO}}{qw(dbh rdbh)} = @$dbo{qw(dbh rdbh)};
 { # Reset the active query
-    local(@$q{qw(sth Active)});
+    local(@$q{qw(sth Active hash Row)});
     local $q->{cache}{idx} = 0 if exists $q->{cache};
     is_deeply $thawed, $q, 'Same Query';
-    is_deeply $thawed->row, $q->row, 'Same Row from $q->row';
+
     if ($thawed->config('CacheQuery')) {
         is_deeply scalar $thawed->fetch, scalar $q->fetch, 'Same Row from $q->fetch';
     } else {

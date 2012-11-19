@@ -818,8 +818,8 @@ sub run {
     my $me = shift;
     $me->sql; # Build the SQL and detach the Row if needed
     if (defined $me->{Row}) {
-        undef ${$me->{Row}}{array};
-        ${$me->{Row}}{hash} = {};
+        undef ${$me->{Row}}->{array};
+        ${$me->{Row}}->{hash} = {};
     }
 
     my $rv = $me->_execute or return undef;
@@ -947,7 +947,7 @@ sub _build_sql {
         if (SvREFCNT(${$me->{Row}}) > 1) {
             $me->{Row}->_detach;
         } else {
-            undef ${$me->{Row}}{array};
+            undef ${$me->{Row}}->{array};
             undef %{$me->{Row}};
 
             $me->{sql} = $me->{DBO}{dbd_class}->_build_sql_select($me, $me->{build_data});
@@ -1043,6 +1043,8 @@ sub STORABLE_freeze {
 
     local $me->{sth};
     local $me->{Active};
+    local $me->{hash};
+    local $me->{Row};
     local $me->{cache}{idx} = 0 if exists $me->{cache};
     return Storable::nfreeze($me);
 }
@@ -1050,10 +1052,6 @@ sub STORABLE_freeze {
 sub STORABLE_thaw {
     my($me, $cloning, @frozen) = @_;
     %$me = %{ Storable::thaw(@frozen) };
-    if (exists $me->{Row} and exists ${$me->{Row}}->{Parent}) {
-        ${$me->{Row}}->{Parent} = $me;
-        Scalar::Util::weaken ${$me->{Row}}->{Parent};
-    }
 }
 
 sub DESTROY {

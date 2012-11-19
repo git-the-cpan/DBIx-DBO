@@ -17,7 +17,7 @@ my $need_c3_initialize;
 my @ConnectArgs;
 
 BEGIN {
-    $VERSION = '0.30';
+    $VERSION = '0.31';
     # The C3 method resolution order is required.
     if ($] < 5.009_005) {
         require MRO::Compat;
@@ -534,6 +534,30 @@ sub DESTROY {
 1;
 
 __END__
+
+=head1 STORABLE
+
+L<Storable> hooks have been added to these objects to make freezing and thawing possible.
+When a C<DBIx::DBO> object is frozen the read-only and read-write databse handles are not stored with the object, so you'll have to reconnect them afterwards.
+
+  my $query = $dbo->query('customers');
+  $query->where('status', '=', 'payment due');
+  my $frozen = Storable::nfreeze($query);
+  
+  ...
+  
+  my $query = Storable::thaw($frozen);
+  # Replace the DBO after thawing
+  $query->dbo = $dbo;
+  while (my $row = $query->fetch) {
+  ...
+
+Please note that Storable before version 2.38 was unable to store Row objects correctly.
+This only affected Row objects that had not detached from the parent Query object.
+To force a Row to detach, simply call the private C<_detach> method on the row.
+
+  $row->_detach;
+  my $frozen = Storable::nfreeze($row);
 
 =head1 SUBCLASSING
 

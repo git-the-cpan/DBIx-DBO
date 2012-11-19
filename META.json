@@ -16,6 +16,7 @@
    "prereqs" : {
       "build" : {
          "requires" : {
+            "ExtUtils::CBuilder" : "0",
             "File::Temp" : "0",
             "Module::Build" : "0.30",
             "Test::More" : "0.62"
@@ -30,8 +31,9 @@
          "recommends" : {
             "DBD::Oracle" : "1.13",
             "DBD::Pg" : "2",
-            "DBD::SQLite" : "1.30",
-            "DBD::mysql" : "4.004"
+            "DBD::SQLite" : "1.31",
+            "DBD::mysql" : "4.004",
+            "Storable" : "2.38"
          },
          "requires" : {
             "DBI" : "1.50",
@@ -42,7 +44,7 @@
    "provides" : {
       "DBIx::DBO" : {
          "file" : "lib/DBIx/DBO.pm",
-         "version" : "0.30"
+         "version" : "0.31"
       },
       "DBIx::DBO::Query" : {
          "file" : "lib/DBIx/DBO/Query.pm",
@@ -69,5 +71,5 @@
          "url" : "https://vlyon.svn.beanstalkapp.com/src/dbo"
       }
    },
-   "version" : "0.30"
+   "version" : "0.31"
 }
