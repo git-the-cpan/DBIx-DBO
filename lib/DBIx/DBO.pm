@@ -17,7 +17,7 @@ my $need_c3_initialize;
 my @ConnectArgs;
 
 BEGIN {
-    $VERSION = '0.31';
+    $VERSION = '0.32';
     # The C3 method resolution order is required.
     if ($] < 5.009_005) {
         require MRO::Compat;
@@ -423,30 +423,24 @@ The I<read-only> C<DBI> handle, or if there is no I<read-only> connection, the I
 sub dbo { $_[0] }
 
 sub _handle {
-    my $me = shift;
-    my $handle = shift;
-    my($d, $c) = $handle ne 'read-only' ? qw(dbh ConnectArgs) : qw(rdbh ConnectReadOnlyArgs);
-    croak "No $handle handle connected" unless defined $me->{$d};
+    my($me, $type) = @_;
+    # $type can be 'read-only', 'read-write' or false (which means try read-only then read-write)
+    $type ||= defined $me->{rdbh} ? 'read-only' : 'read-write';
+    my($d, $c) = $type ne 'read-only' ? qw(dbh ConnectArgs) : qw(rdbh ConnectReadOnlyArgs);
+    croak "No $type handle connected" unless defined $me->{$d};
     # Automatically reconnect, but only if possible and needed
     $me->{$d} = $me->_connect($me->{$c}) if exists $me->{$c} and not $me->{$d}->ping;
-    return $me->{$d};
+    $me->{$d};
 }
 
 sub dbh {
     my $me = shift;
-    if (my $handle = $me->config('UseHandle')) {
-        return $me->_handle($handle);
-    }
-    $me->_handle('read-write');
+    $me->_handle($me->config('UseHandle') || 'read-write');
 }
 
 sub rdbh {
     my $me = shift;
-    if (my $handle = $me->config('UseHandle')) {
-        return $me->_handle($handle);
-    }
-    return $me->dbh unless defined $me->{rdbh};
-    $me->_handle('read-only');
+    $me->_handle($me->config('UseHandle'));
 }
 
 =head3 C<config>
@@ -514,17 +508,28 @@ sub STORABLE_freeze {
     my $me = $_[0];
     return unless ref $me->{dbh} or ref $me->{rdbh};
 
-    my($dbh, $rdbh) = @$me{qw(dbh rdbh)};
-    $me->{dbh} = "$me->{dbh}" if defined $me->{dbh};
-    $me->{rdbh} = "$me->{rdbh}" if defined $me->{rdbh};
+    my %stash = map { $_ => delete $me->{$_} } qw(dbh rdbh ConnectArgs ConnectReadOnlyArgs);
+    $me->{dbh} = "$stash{dbh}" if defined $stash{dbh};
+    $me->{rdbh} = "$stash{rdbh}" if defined $stash{rdbh};
+    for (qw(ConnectArgs ConnectReadOnlyArgs)) {
+        $me->{$_} = $ConnectArgs[$stash{$_}] if defined $stash{$_};
+    }
+
     my $frozen = Storable::nfreeze($me);
-    @$me{qw(dbh rdbh)} = ($dbh, $rdbh);
+    defined $stash{$_} and $me->{$_} = $stash{$_} for qw(dbh rdbh ConnectArgs ConnectReadOnlyArgs);
     return $frozen;
 }
 
 sub STORABLE_thaw {
     my($me, $cloning, $frozen) = @_;
     %$me = %{ Storable::thaw($frozen) };
+    if ($me->config('AutoReconnect')) {
+        for (qw(ConnectArgs ConnectReadOnlyArgs)) {
+            $me->{$_} = push(@ConnectArgs, $me->{$_}) - 1 if $me->{$_};
+        }
+    } else {
+        delete $me->{$_} for qw(ConnectArgs ConnectReadOnlyArgs);
+    }
 }
 
 sub DESTROY {
