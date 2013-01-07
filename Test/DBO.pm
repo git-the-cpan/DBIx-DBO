@@ -42,21 +42,13 @@ BEGIN {
         $Carp::Verbose = 1;
     }
 
-    # Remove CARP_NOT during tests
-    @DBIx::DBO::DBD::CARP_NOT = ();
-
     # Store the last SQL executed, and show debug info
-    {
-        no warnings 'redefine';
-        package # Hide from PAUSE
-            DBIx::DBO::DBD;
-        *DBIx::DBO::DBD::_sql = sub {
-            my $class = shift;
+    DBIx::DBO->config(HookSQL => sub {
             my $me = shift;
             my $loc = Carp::short_error_loc();
             my %i = Carp::caller_info($loc);
-            @{(Scalar::Util::reftype($me) eq 'REF' ? $$me : $me)->{LastSQL}} = ($i{'sub'}, @_);
-            my $dbg = $me->config('DebugSQL') or return;
+            $me->config(LastSQL => [$i{'sub'}, @_]);
+            my $dbg = $ENV{DBO_DEBUG_SQL} or return;
             my $trace;
             if ($dbg > 1) {
                 $trace = "\t$i{sub_name} called at $i{file} line $i{line}\n";
@@ -66,8 +58,23 @@ BEGIN {
             }
             my $sql = shift;
             Test::More::diag "DEBUG_SQL: $sql\nDEBUG_SQL: (".join(', ', map $me->rdbh->quote($_), @_).")\n".$trace;
+        });
+
+    {
+        no warnings 'redefine';
+        # Remove CARP_NOT during tests
+        package # Hide from PAUSE
+            DBIx::DBO;
+        *DBIx::DBO::croak =
+        *DBIx::DBO::Query::croak =
+        *DBIx::DBO::Table::croak =
+        *DBIx::DBO::Row::croak = sub {
+            local @DBIx::DBO::DBD::CARP_NOT = () if $Carp::Verbose;
+            local $Carp::CarpLevel = $Carp::CarpLevel + 1 if $Carp::Verbose;
+            &Carp::croak;
         };
-        package
+        # Fix SvREFCNT with Devel::Cover
+        package # Hide from PAUSE
             DBIx::DBO::Query;
         *DBIx::DBO::Query::SvREFCNT = sub {
             return Devel::Peek::SvREFCNT($_[0]) - 1;
@@ -104,21 +111,18 @@ sub import {
     unless (eval { DBIx::DBO::DBD->_require_dbd_class($dbd) }) {
         if ($@ =~ /^Can't locate ([\w\/]+)\.pm in \@INC /m) {
             # Module is not installed
-            ($_ = $1) =~ s'/'::'g;
-        } elsif ($@ =~ /^([\w:]+ version [\d\.]+) required/m) {
+            ($_ = "$1 is required") =~ s'/'::'g;
+        } elsif ($@ =~ /^([\w:]+ version [\d\.]+ required.*?) at /m) {
             # Module is not correct version
             ($_ = $1);
-        } elsif ($@ =~ /^\Q$dbd_name\E is not yet supported/m) {
+        } elsif ($@ =~ /^(\Q$dbd_name\E is not yet supported)/m) {
             # DBM is not yet supported
-            plan skip_all => "Can't load $dbd driver: $dbd_name is not yet supported";
+            ($_ = $1);
         } else {
             die $@;
         }
-        plan skip_all => "Can't load $dbd driver: $_ is required";
+        plan skip_all => "Can't load $dbd driver: $_";
     }
-
-    # Remove CARP_NOT during tests
-    @DBIx::DBO::DBD::CARP_NOT = ();
 
     {
         no strict 'refs';
@@ -160,7 +164,7 @@ sub import {
 
 sub sql_err {
     my $me = shift;
-    my($cmd, $sql, @bind) = @{(Scalar::Util::reftype($me) eq 'REF' ? $$me : $me)->{LastSQL}};
+    my($cmd, $sql, @bind) = @{$me->config('LastSQL')};
     $sql =~ s/^/  /mg;
     my @err = ($DBI::errstr || $me->rdbh->errstr || '???');
     unshift @err, 'Bind Values: ('.join(', ', map $me->rdbh->quote($_), @bind).')' if @bind;
@@ -214,9 +218,7 @@ sub basic_methods {
 
         # Check the Primary Keys
         is_deeply $t->{PrimaryKeys}, ['type', 'id'], 'Check PrimaryKeys'
-            or diag Test::DBO::Dump($t),
-Test::DBO::Dump($dbo->rdbh->column_info(undef, $test_sch, $test_tbl, '%')->fetchall_arrayref({}), 'column_info'),
-Test::DBO::Dump($dbo->rdbh->primary_key_info(undef, $test_sch, $test_tbl)->fetchall_arrayref({}), 'primary_key_info');
+            or diag Test::DBO::Dump($t);
 
         # Recreate our test table
         $dbo->do("DROP TABLE $quoted_table") && $dbo->do($create_table)
@@ -420,6 +422,7 @@ sub query_methods {
     is $q->dbo, $dbo, 'Method DBIx::DBO::Query->dbo';
 
     # Default sql = select everything
+    is_deeply [$q->columns], [qw(id name)], 'Method DBIx::DBO::Query->columns';
     my $sql = $q->sql;
     is $sql, "SELECT * FROM $quoted_table", 'Method DBIx::DBO::Query->sql';
 
@@ -453,7 +456,7 @@ sub query_methods {
     is $r_str, "$r", 'Re-use the same row object';
 
     # Access methods
-    is_deeply [$q->columns], [qw(id name)], 'Method DBIx::DBO::Query->columns';
+    is_deeply [$q->columns], [qw(id name)], 'Method DBIx::DBO::Query->columns (after fetch)';
     is $r->{name}, 'John Doe', 'Access row as a hashref';
     is $r->[0], 1, 'Access row as an arrayref';
 
@@ -519,7 +522,9 @@ sub query_methods {
     # Update & Load a Row with aliased columns
     $q->show('name', {COL => 'id', AS => 'key'});
     $q->group_by;
+    is_deeply [$q->columns], [qw(name key)], 'Method DBIx::DBO::Query->columns (with aliases)';
     $r = $q->fetch;
+    is_deeply [$q->columns], [qw(name key)], 'Method DBIx::DBO::Query->columns (after fetch)';
     ok $r->update(id => $r->{key}), 'Can update a Row despite using aliases' or diag sql_err($r);
     ok $r->load(id => 5), 'Can load a Row despite using aliases' or diag sql_err($r);
 

@@ -4,7 +4,7 @@
       "Vernon Lyon <vlyon@cpan.org>"
    ],
    "dynamic_config" : 1,
-   "generated_by" : "Module::Build version 0.38, CPAN::Meta::Converter version 2.120921",
+   "generated_by" : "Module::Build version 0.38, CPAN::Meta::Converter version 2.110440",
    "license" : [
       "perl_5"
    ],
@@ -16,8 +16,7 @@
    "prereqs" : {
       "build" : {
          "requires" : {
-            "ExtUtils::CBuilder" : "0",
-            "File::Temp" : "0",
+            "File::Temp" : 0,
             "Module::Build" : "0.30",
             "Test::More" : "0.62"
          }
@@ -44,7 +43,7 @@
    "provides" : {
       "DBIx::DBO" : {
          "file" : "lib/DBIx/DBO.pm",
-         "version" : "0.32"
+         "version" : "0.33"
       },
       "DBIx::DBO::Query" : {
          "file" : "lib/DBIx/DBO/Query.pm",
@@ -71,5 +70,5 @@
          "url" : "https://vlyon.svn.beanstalkapp.com/src/dbo"
       }
    },
-   "version" : "0.32"
+   "version" : "0.33"
 }

@@ -114,8 +114,13 @@ sub _qi {
 }
 
 sub _sql {
-    my($class, $me, $sql, @bind) = @_;
+    my $class = shift;
+    my $me = shift;
+    if (my $hook = $me->config('HookSQL')) {
+        $hook->($me, @_);
+    }
     my $dbg = $me->config('DebugSQL') or return;
+    my($sql, @bind) = @_;
 
     require Carp::Heavy if eval "$Carp::VERSION < 1.12";
     my $loc = Carp::short_error_loc();
@@ -223,6 +228,16 @@ sub _build_from {
             if $h->{Join_On}[$i];
     }
     $h->{from};
+}
+
+sub _parse_col_val {
+    my($class, $me, $col, %c) = @_;
+    unless (defined $c{Aliases}) {
+        (my $method = (caller(1))[3]) =~ s/.*:://;
+        $c{Aliases} = $class->_alias_preference($me, $method);
+    }
+    return $class->_parse_val($me, $col, Check => 'Column', %c) if ref $col;
+    return [ $class->_parse_col($me, $col, $c{Aliases}) ];
 }
 
 # In some cases column aliases can be used, but this differs by DB and where in the statement it's used.
