@@ -43,7 +43,7 @@
    "provides" : {
       "DBIx::DBO" : {
          "file" : "lib/DBIx/DBO.pm",
-         "version" : "0.33"
+         "version" : "0.34"
       },
       "DBIx::DBO::Query" : {
          "file" : "lib/DBIx/DBO/Query.pm",
@@ -70,5 +70,5 @@
          "url" : "https://vlyon.svn.beanstalkapp.com/src/dbo"
       }
    },
-   "version" : "0.33"
+   "version" : "0.34"
 }

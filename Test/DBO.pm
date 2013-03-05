@@ -206,7 +206,8 @@ sub basic_methods {
     my @quoted_cols = map $dbo->{dbd_class}->_qi($dbo, $_), qw(type id name);
     my $t;
     my $create_table = "CREATE TABLE $quoted_table ($quoted_cols[1] ".
-        ($can{auto_increment_id} || 'INT NOT NULL').", $quoted_cols[2] VARCHAR(20))";
+        ($can{auto_increment_id} || 'INT NOT NULL').", $quoted_cols[2] VARCHAR(20)".
+        ($can{auto_increment_id} ? '' : ", PRIMARY KEY ($quoted_cols[1])").')';
 
     # Create a test table with a multi-column primary key
     if ($dbo->do("CREATE TABLE $quoted_table ($quoted_cols[2] VARCHAR(20), $quoted_cols[1] INT, $quoted_cols[0] VARCHAR(8), PRIMARY KEY ($quoted_cols[0], $quoted_cols[1]))")) {
@@ -390,18 +391,30 @@ sub row_methods {
 
     is $r->dbo, $dbo, 'Method DBIx::DBO::Row->dbo';
 
-    is $$r->{array}, undef, 'Row is empty';
+    ok $r->is_empty, 'Method DBIx::DBO::Row->is_empty';
     is_deeply [$r->columns], [qw(id name)], 'Method DBIx::DBO::Row->columns';
 
-    ok $r->load(id => 2, name => 'Jane Smith'), 'Method DBIx::DBO::Row->load' or diag sql_err($r);
+    ok $r->load(id => [2, 3], name => 'Jane Smith'), 'Method DBIx::DBO::Row->load' or diag sql_err($r);
     is_deeply $$r->{array}, [ 2, 'Jane Smith' ], 'Row loaded correctly';
 
+    # Access methods
+    is $r->[1], 'Jane Smith', 'Access row as an arrayref';
+    is $r->{name}, 'Jane Smith', 'Access row as a hashref';
+    is $r->value('name'), 'Jane Smith', 'Method DBIx::DBO::Row->value';
+    is $r->value($t->column('name')), 'Jane Smith', 'Method DBIx::DBO::Row->value (using Table->column)';
+
     is $r->update(name => 'Someone Else'), 1, 'Method DBIx::DBO::Row->update' or diag sql_err($r);
-    is $$r->{array}, undef, 'Row is empty again';
-    is_deeply \@{$r->load(id => 2)}, [ 2, 'Someone Else' ], 'Row updated correctly' or diag sql_err($r);
+    is_deeply \@$r, [ 2, 'Someone Else' ], 'Row updated correctly (internal)' or diag Test::DBO::Dump($r);
+    $r->load(id => 2) or diag sql_err($r);
+    is_deeply \@$r, [ 2, 'Someone Else' ], 'Row updated correctly (external)' or diag Test::DBO::Dump($r);
 
     $r->update(name => 'Nobody', $t ** 'name' => 'Anybody') or diag sql_err($r);
     is_deeply \@{$r->load(id => 2)}, [ 2, 'Anybody' ], 'Row update removes duplicates' or diag sql_err($r);
+
+    # UPDATE the primary key and a complex expression, requiring a reload
+    $r->config(OnRowUpdate => 'reload');
+    $r->update(id => 3, name => \"'Uncle Arnie'") or diag sql_err($r);
+    ok !$r->is_empty, 'Row reloaded on update' or $r->load(id => [2, 3]) or diag sql_err($r);
 
     ok $r->delete, 'Method DBIx::DBO::Row->delete' or diag sql_err($r);
     $t->insert(id => 2, name => 'Jane Smith');
@@ -454,20 +467,12 @@ sub query_methods {
     $r = $q->fetch;
     ok $r->isa('DBIx::DBO::Row'), 'Method DBIx::DBO::Query->fetch';
     is $r_str, "$r", 'Re-use the same row object';
-
-    # Access methods
     is_deeply [$q->columns], [qw(id name)], 'Method DBIx::DBO::Query->columns (after fetch)';
-    is $r->{name}, 'John Doe', 'Access row as a hashref';
-    is $r->[0], 1, 'Access row as an arrayref';
 
     # Fetch another row
     $r_str = "$r";
     $r = $q->fetch;
     isnt $r_str, "$r", 'Row detaches during fetch when a ref still exists';
-
-    # More access methods
-    is $r->value($t->column('name')), 'Jane Smith', 'Access row via method DBIx::DBO::Row::value';
-    is $r ** $t ** 'name', 'Jane Smith', 'Access row via shortcut method **';
 
     # Re-run the query
     $q->run or diag sql_err($q);
@@ -498,6 +503,10 @@ sub query_methods {
     $q->where('id', 'NOT IN', 4444);
     ok scalar(() = $q->sql =~ / NOT IN /g) == 1, 'Group multiple IN & NOT IN clauses together';
 
+    $q->order_by;
+    is $q->update(id => { FUNC => '? + 10', COL => 'id' }), 3, 'Method DBIx::DBO::Query->update' or diag sql_err($q);
+    $q->order_by('id');
+
     my $old_sql = $q->sql;
     $q->unwhere('name');
     is $q->sql, $old_sql, 'Method DBIx::DBO::Query->unwhere (before close_bracket)';
@@ -508,7 +517,7 @@ sub query_methods {
     isnt $q->sql, $old_sql, 'Method DBIx::DBO::Query->close_bracket';
 
     $got = $q->col_arrayref({ Columns => [1] });
-    is_deeply $got, [2,4,5,6,7], 'Method DBIx::DBO::Query->unwhere';
+    is_deeply $got, [2,7,14,15,16], 'Method DBIx::DBO::Query->unwhere';
 
     # Reset the Query
     $q->reset;
@@ -526,7 +535,7 @@ sub query_methods {
     $r = $q->fetch;
     is_deeply [$q->columns], [qw(name key)], 'Method DBIx::DBO::Query->columns (after fetch)';
     ok $r->update(id => $r->{key}), 'Can update a Row despite using aliases' or diag sql_err($r);
-    ok $r->load(id => 5), 'Can load a Row despite using aliases' or diag sql_err($r);
+    ok $r->load(id => 15), 'Can load a Row despite using aliases' or diag sql_err($r);
 
     $q->finish;
     return $q;
@@ -548,13 +557,13 @@ sub advanced_query_methods {
     $q->show({ FUNC => 'UPPER(?)', COL => 'name', AS => 'name' }, 'id', 'name');
     ok $q->run && $q->fetch->{name} eq 'JOHN DOE', 'Method DBIx::DBO::Query->show' or diag sql_err($q);
 
-    is $q->row ** $t ** 'name', 'John Doe', 'Access specific column';
+    is $q->row->value($t ** 'name'), 'John Doe', 'Access specific column';
     is_deeply [$q->row->columns], [qw(name id name)], 'Method DBIx::DBO::Row->columns (aliased)';
     is_deeply [$q->columns], [qw(name id name)], 'Method DBIx::DBO::Query->columns (aliased)';
 
     # Show whole tables
     $q->show({ FUNC => "'who?'", AS => 'name' }, $t);
-    is $q->fetch ** $t ** 'name', 'John Doe', 'Access specific column from a shown table';
+    is $q->fetch->value($t ** 'name'), 'John Doe', 'Access specific column from a shown table';
 
     # Check case sensitivity of LIKE
     my $case_sensitive = $dbo->selectrow_arrayref($case_sensitivity_sql, undef, 'a', 'A') or diag sql_err($dbo);
@@ -565,13 +574,13 @@ sub advanced_query_methods {
     $q->show('id');
     ok $q->where('name', 'LIKE', '%a%'), 'Method DBIx::DBO::Query->where LIKE';
     my $a = $q->col_arrayref or diag sql_err($q);
-    is_deeply $a, [2,4,6,7], 'Method DBIx::DBO::Query->col_arrayref';
-    ok $q->where('id', 'BETWEEN', [2, \6]), 'Method DBIx::DBO::Query->where BETWEEN';
+    is_deeply $a, [2,7,14,16], 'Method DBIx::DBO::Query->col_arrayref';
+    ok $q->where('id', 'BETWEEN', [6, \16]), 'Method DBIx::DBO::Query->where BETWEEN';
     $a = $q->arrayref or diag sql_err($q);
-    is_deeply $a, [[2],[4],[6]], 'Method DBIx::DBO::Query->arrayref';
+    is_deeply $a, [[7],[14],[16]], 'Method DBIx::DBO::Query->arrayref';
     ok $q->where('name', 'IN', ['Harry Harrelson', 'James Bond']), 'Method DBIx::DBO::Query->where IN';
     $a = $q->hashref('id') or diag sql_err($q);
-    is_deeply $a, {4 => {id => 4},6 => {id => 6}}, 'Method DBIx::DBO::Query->hashref';
+    is_deeply $a, {14 => {id => 14},16 => {id => 16}}, 'Method DBIx::DBO::Query->hashref';
 
     # HAVING clause
     my $concat = $dbd eq 'SQLite' ? '? || ?' : 'CONCAT(?, ?)';
@@ -579,15 +588,15 @@ sub advanced_query_methods {
     my $having_col = $dbo->{dbd_class}->_alias_preference($q, 'having') ? 'combo' : \%concat_col;
     $q->show('id', 'name', { %concat_col, AS => 'combo'});
     $q->group_by('id', 'name');
-    $q->having($having_col, '=', '4James Bond');
+    $q->having($having_col, '=', '14James Bond');
     $q->having($having_col, '=', 'ABC-XYZ');
     $q->having($having_col, '=', 'XYZ-ABC');
-    is_deeply [@{$q->fetch}], [4, 'James Bond', '4James Bond'], 'Method DBIx::DBO::Query->having';
+    is_deeply [@{$q->fetch}], [14, 'James Bond', '14James Bond'], 'Method DBIx::DBO::Query->having';
 
-    $q->unhaving($having_col, '=', '4James Bond');
+    $q->unhaving($having_col, '=', '14James Bond');
     is $q->fetch, undef, 'Method DBIx::DBO::Query->unhaving';
     $q->unhaving($having_col);
-    is_deeply [@{$q->fetch}], [4, 'James Bond', '4James Bond'], 'Method DBIx::DBO::Query->unhaving (whole column)';
+    is_deeply [@{$q->fetch}], [14, 'James Bond', '14James Bond'], 'Method DBIx::DBO::Query->unhaving (whole column)';
 
     $q->finish;
 }
@@ -606,7 +615,7 @@ sub join_methods {
     $q->order_by('id');
     $q->show('id');
     $q->distinct(1);
-    is_deeply $q->arrayref, [[1],[2],[4],[5],[6],[7]], 'Method DBIx::DBO::Query->distinct';
+    is_deeply $q->arrayref, [[1],[2],[7],[14],[15],[16]], 'Method DBIx::DBO::Query->distinct';
     $q->distinct(0);
     $q->show($t1, $t2);
 
@@ -618,7 +627,7 @@ sub join_methods {
     is $q->found_rows, 36, 'Method DBIx::DBO::Query->found_rows' or diag sql_err($q);
 
     # JOIN
-    $q->join_on($t2, $t1 ** 'id', '=', { FUNC => '?/2.0', VAL => $t2 ** 'id' });
+    $q->join_on($t2, $t1 ** 'id', '=', { FUNC => '?/7.0', VAL => $t2 ** 'id' });
     $q->order_by({ COL => $t1 ** 'name', ORDER => 'DESC' });
     $q->where($t1 ** 'name', '<', $t2 ** 'name', FORCE => 'OR');
     $q->where($t1 ** 'name', '>', $t2 ** 'name', FORCE => 'OR');
@@ -630,9 +639,9 @@ sub join_methods {
         $q->run or fail 'JOIN ON' or diag sql_err($q) or skip 'No Left Join', 1;
         $r = $q->fetch or fail 'JOIN ON' or skip 'No Left Join', 1;
 
-        is_deeply \@$r, [ 1, 'John Doe', 2, 'Jane Smith' ], 'JOIN ON';
+        is_deeply \@$r, [ 1, 'John Doe', 7, 'Amanda Huggenkiss' ], 'JOIN ON';
         $r->load($t1 ** id => 2) or diag sql_err($r);
-        is_deeply \@$r, [ 2, 'Jane Smith', 4, 'James Bond' ], 'Method DBIx::DBO::Row->load';
+        is_deeply \@$r, [ 2, 'Jane Smith', 14, 'James Bond' ], 'Method DBIx::DBO::Row->load';
     }
 
     # LEFT JOIN
@@ -662,7 +671,7 @@ sub join_methods {
         $q->_sth or diag sql_err($q) or fail 'LEFT JOIN' or skip 'No Left Join', 3;
         $r = $q->fetch or fail 'LEFT JOIN' or skip 'No Left Join', 3;
 
-        is_deeply \@$r, [ 4, 'James Bond', undef, undef ], 'LEFT JOIN';
+        is_deeply \@$r, [ 14, 'James Bond', undef, undef ], 'LEFT JOIN';
         is $r->_column_idx($t2 ** 'id'), 2, 'Method DBIx::DBO::Row->_column_idx';
         is $r->value($t2 ** 'id'), undef, 'Method DBIx::DBO::Row->value';
 

@@ -22,7 +22,7 @@ if ($dbo->do("CREATE DATABASE $quoted_db")) {
     $quoted_db = $dbo->{dbd_class}->_qi($dbo, $Test::DBO::test_db);
 }
 
-plan tests => 110;
+plan tests => 112;
 
 # Create the DBO (3 tests)
 pass "Connect to MySQL $quoted_db database";
@@ -53,10 +53,10 @@ if (my $collation = $dbo->selectrow_hashref('SHOW TABLE STATUS LIKE ?', undef, s
 # Advanced table methods: insert, update, delete (2 tests)
 Test::DBO::advanced_table_methods($dbo, $t);
 
-# Row methods: (15 tests)
+# Row methods: (20 tests)
 Test::DBO::row_methods($dbo, $t);
 
-# Query methods: (32 tests)
+# Query methods: (29 tests)
 my $q = Test::DBO::query_methods($dbo, $t);
 
 # MySQL CalcFoundRows: (2 tests)

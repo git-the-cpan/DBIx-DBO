@@ -6,7 +6,7 @@ use Carp 'croak';
 use Scalar::Util qw(blessed weaken);
 use Storable ();
 
-use overload '@{}' => sub {${$_[0]}->{array} || []}, '%{}' => sub {${$_[0]}->{hash}}, '**' => \&value, fallback => 1;
+use overload '@{}' => sub {${$_[0]}->{array} || []}, '%{}' => sub {${$_[0]}->{hash}}, fallback => 1;
 
 sub _table_class { ${$_[0]}->{DBO}->_table_class }
 
@@ -26,10 +26,10 @@ DBIx::DBO::Row - An OO interface to SQL queries and results.  Encapsulates a fet
   $row->update(salary => {FUNC => '? * 2', COL => 'salary'});
   
   # Print my email address
-  print $row ** 'email';  # Short for: $row->value('email')
+  print $row->{email};
   
   # Delete my boss
-  $row->load(id => $row ** 'boss_id')->delete or die "Can't kill the boss";
+  $row->load(id => $row->{boss_id})->delete or die "Can't kill the boss";
 
 =head1 METHODS
 
@@ -177,9 +177,8 @@ sub column {
 =head3 C<value>
 
   $value = $row->value($column);
-  $value = $row ** $column;
 
-Return the value in the C<$column> field.  The C<**> method is a shortcut for the C<value> method.
+Return the value in the C<$column> field.
 C<$column> can be a column name or a C<Column> object.
 
 Values in the C<Row> can also be obtained by using the object as an array/hash reference.
@@ -222,18 +221,25 @@ sub load {
     push @{$$me->{build_data}{Quick_Where}}, @_;
     undef $$me->{build_data}{where};
     my $sql = $$me->{DBO}{dbd_class}->_build_sql_select($me, $$me->{build_data});
+    my @bind = $$me->{DBO}{dbd_class}->_bind_params_select($me, $$me->{build_data});
     $old_qw < 0 ? delete $$me->{build_data}{Quick_Where} : ($#{$$me->{build_data}{Quick_Where}} = $old_qw);
+    delete $$me->{build_data}{where};
+    delete $$me->{build_data}{Where_Bind};
 
-    undef @{$$me->{Columns}};
+    return $me->_load($sql, @bind);
+}
+
+sub _load {
+    my($me, $sql, @bind) = @_;
     undef $$me->{array};
     $$me->{hash} = \my %hash;
-    $$me->{DBO}{dbd_class}->_sql($me, $sql, $$me->{DBO}{dbd_class}->_bind_params_select($me, $$me->{build_data}));
+    $$me->{DBO}{dbd_class}->_sql($me, $sql, @bind);
     my $sth = $me->rdbh->prepare($sql);
-    return unless $sth and $sth->execute($$me->{DBO}{dbd_class}->_bind_params_select($me, $$me->{build_data}));
+    return unless $sth and $sth->execute(@bind);
 
     my $i;
     my @array;
-    for (@{$$me->{Columns}} = @{$sth->{NAME}}) {
+    for (@{$$me->{Columns}}) {
         $i++;
         $sth->bind_col($i, \$hash{$_}) unless exists $hash{$_};
     }
@@ -291,6 +297,7 @@ sub update {
 Deletes the current row.
 Returns the number of rows deleted or C<'0E0'> for no rows to ensure the value is true,
 and returns false if there was an error.
+The C<Row> object will then be empty.
 
 Note: If C<LIMIT> is supported on C<DELETE>s then only the first matching row will be deleted
 otherwise ALL rows matching the current row will be deleted.
@@ -307,6 +314,19 @@ sub delete {
     undef $$me->{array};
     $$me->{hash} = {};
     $$me->{DBO}{dbd_class}->_do($me, $sql, undef, $$me->{DBO}{dbd_class}->_bind_params_delete($me, $build_data));
+}
+
+=head3 C<is_empty>
+
+  return $row->{id} unless $row->is_empty;
+
+Checks to see if it's an empty C<Row>, and returns true or false.
+
+=cut
+
+sub is_empty {
+    my $me = shift;
+    return not defined $$me->{array};
 }
 
 =head2 Common Methods

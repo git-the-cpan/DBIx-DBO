@@ -8,7 +8,7 @@ BEGIN {
 }
 # Create the DBO (2 tests)
 my $dbo;
-use Test::DBO Oracle => 'Oracle', tests => 107, connect_ok => [\$dbo];
+use Test::DBO Oracle => 'Oracle', tests => 109, connect_ok => [\$dbo];
 
 # Use the default Schema
 undef $Test::DBO::test_db;
@@ -22,10 +22,10 @@ my $t = Test::DBO::basic_methods($dbo);
 # Advanced table methods: insert, update, delete (2 tests)
 Test::DBO::advanced_table_methods($dbo, $t);
 
-# Row methods: (15 tests)
+# Row methods: (20 tests)
 Test::DBO::row_methods($dbo, $t);
 
-# Query methods: (32 tests)
+# Query methods: (29 tests)
 my $q = Test::DBO::query_methods($dbo, $t);
 
 # Advanced query methods: (15 tests)
