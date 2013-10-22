@@ -380,7 +380,7 @@ sub row_methods {
     my $dbo = shift;
     my $t = shift;
 
-    my $r = DBIx::DBO::Row->new($dbo, $t->_quoted_name);
+    my $r = DBIx::DBO::Row->new($dbo, $t->_from);
     isa_ok $r, 'DBIx::DBO::Row', '$r (using quoted table name)';
 
     $r = $dbo->row([ @$t{qw(Schema Name)} ]);
@@ -426,7 +426,7 @@ sub row_methods {
 sub query_methods {
     my $dbo = shift;
     my $t = shift;
-    my $quoted_table = $t->_quoted_name;
+    my $quoted_table = $t->_from;
 
     # Create a query object
     my $q = $dbo->query($t);
@@ -536,6 +536,8 @@ sub query_methods {
     is_deeply [$q->columns], [qw(name key)], 'Method DBIx::DBO::Query->columns (after fetch)';
     ok $r->update(id => $r->{key}), 'Can update a Row despite using aliases' or diag sql_err($r);
     ok $r->load(id => 15), 'Can load a Row despite using aliases' or diag sql_err($r);
+
+    isa_ok $q ** 'key', 'DBIx::DBO::Column', q{$q ** $alias};
 
     $q->finish;
     return $q;

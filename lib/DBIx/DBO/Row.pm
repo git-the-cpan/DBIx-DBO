@@ -10,6 +10,8 @@ use overload '@{}' => sub {${$_[0]}->{array} || []}, '%{}' => sub {${$_[0]}->{ha
 
 sub _table_class { ${$_[0]}->{DBO}->_table_class }
 
+*_isa = \&DBIx::DBO::DBD::_isa;
+
 =head1 NAME
 
 DBIx::DBO::Row - An OO interface to SQL queries and results.  Encapsulates a fetched row of data in an object.
@@ -46,7 +48,7 @@ Can take the same arguments as L<DBIx::DBO::Table/new> or a L<Query|DBIx::DBO::Q
 
 sub new {
     my $proto = shift;
-    UNIVERSAL::isa($_[0], 'DBIx::DBO') or croak 'Invalid DBO Object for new Row';
+    eval { $_[0]->isa('DBIx::DBO') } or croak 'Invalid DBO Object for new Row';
     my $class = ref($proto) || $proto;
     $class->_init(@_);
 }
@@ -60,17 +62,21 @@ sub _init {
 
     $$me->{build_data}{LimitOffset} = [1];
     if ($parent->isa('DBIx::DBO::Query')) {
+        croak 'This query is from a different DBO connection' if $parent->{DBO} != $dbo;
         $$me->{Parent} = $parent;
         # We must weaken this to avoid a circular reference
         weaken $$me->{Parent};
+        $parent->columns;
         $$me->{Tables} = [ @{$parent->{Tables}} ];
         $$me->{Columns} = $parent->{Columns};
+        $$me->{build_data}{from} = $dbo->{dbd_class}->_build_from($parent, $parent->{build_data});
         $me->_copy_build_data;
     } elsif ($parent->isa('DBIx::DBO::Table')) {
+        croak 'This table is from a different DBO connection' if $parent->{DBO} != $dbo;
         $$me->{build_data} = {
             show => '*',
             Showing => [],
-            from => $parent->_quoted_name,
+            from => $parent->_from,
             group => '',
             order => '',
         };
@@ -85,7 +91,7 @@ sub _init {
 sub _copy_build_data {
     my $me = $_[0];
     # Store needed build_data
-    for my $f (qw(Showing from From_Bind Quick_Where Where_Data Where_Bind group Group_Bind order Order_Bind)) {
+    for my $f (qw(Showing From_Bind Quick_Where Where_Data Where_Bind group Group_Bind order Order_Bind)) {
         $$me->{build_data}{$f} = $me->_copy($$me->{Parent}{build_data}{$f}) if exists $$me->{Parent}{build_data}{$f};
     }
 }
@@ -93,7 +99,7 @@ sub _copy_build_data {
 sub _copy {
     my($me, $val) = @_;
     return bless [$me, $val->[1]], 'DBIx::DBO::Column'
-        if UNIVERSAL::isa($val, 'DBIx::DBO::Column') and $val->[0] == $$me->{Parent};
+        if _isa($val, 'DBIx::DBO::Column') and $val->[0] == $$me->{Parent};
     ref $val eq 'ARRAY' ? [map $me->_copy($_), @$val] : ref $val eq 'HASH' ? {map $me->_copy($_), %$val} : $val;
 }
 
@@ -130,14 +136,30 @@ Return a list of column names.
 =cut
 
 sub columns {
-    @{${$_[0]}->{Columns}};
+    my($me) = @_;
+
+    return $$me->{Parent}->columns if $$me->{Parent};
+
+    @{$$me->{Columns}} = do {
+        if (@{$$me->{build_data}{Showing}}) {
+            map {
+                _isa($_, 'DBIx::DBO::Table') ? ($_->columns) : $me->_build_col_val_name(@$_)
+            } @{$$me->{build_data}{Showing}};
+        } else {
+            map { $_->columns } @{$$me->{Tables}};
+        }
+    } unless @{$$me->{Columns}};
+
+    @{$$me->{Columns}};
 }
+
+*_build_col_val_name = \&DBIx::DBO::Query::_build_col_val_name;
 
 sub _column_idx {
     my($me, $col) = @_;
     my $idx = -1;
     for my $shown (@{$$me->{build_data}{Showing}} ? @{$$me->{build_data}{Showing}} : @{$$me->{Tables}}) {
-        if (UNIVERSAL::isa($shown, 'DBIx::DBO::Table')) {
+        if (_isa($shown, 'DBIx::DBO::Table')) {
             if ($col->[0] == $shown and exists $shown->{Column_Idx}{$col->[1]}) {
                 return $idx + $shown->{Column_Idx}{$col->[1]};
             }
@@ -153,25 +175,41 @@ sub _column_idx {
 =head3 C<column>
 
   $row->column($column_name);
-  $row->column($alias_or_column_name, 1);
 
 Returns a column reference from the name or alias.
-By default only column names are searched, set the second argument to true to check column aliases and names.
 
 =cut
 
 sub column {
-    my($me, $col, $_check_aliases) = @_;
-    if ($_check_aliases) {
-        for my $fld (@{$$me->{build_data}{Showing}}) {
-            return $$me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column'
-                if ref($fld) eq 'ARRAY' and exists $fld->[2]{AS} and $col eq $fld->[2]{AS};
-        }
+    my($me, $col) = @_;
+    my @show;
+    @show = @{$$me->{build_data}{Showing}} or @show = @{$$me->{Tables}};
+    for my $fld (@show) {
+        return $$me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column'
+            if (_isa($fld, 'DBIx::DBO::Table') and exists $fld->{Column_Idx}{$col})
+            or (ref($fld) eq 'ARRAY' and exists $fld->[2]{AS} and $col eq $fld->[2]{AS});
     }
+    croak 'No such column: '.$$me->{DBO}{dbd_class}->_qi($me, $col);
+}
+
+sub _inner_col {
+    my($me, $col, $_check_aliases) = @_;
+    $_check_aliases = $$me->{DBO}{dbd_class}->_alias_preference($me, 'column') unless defined $_check_aliases;
+    my $column;
+    return $column if $_check_aliases == 1 and $column = $me->_check_alias($col);
     for my $tbl ($me->tables) {
         return $tbl->column($col) if exists $tbl->{Column_Idx}{$col};
     }
+    return $column if $_check_aliases == 2 and $column = $me->_check_alias($col);
     croak 'No such column'.($_check_aliases ? '/alias' : '').': '.$$me->{DBO}{dbd_class}->_qi($me, $col);
+}
+
+sub _check_alias {
+    my($me, $col) = @_;
+    for my $fld (@{$me->{build_data}{Showing}}) {
+        return $me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column'
+            if ref($fld) eq 'ARRAY' and exists $fld->[2]{AS} and $col eq $fld->[2]{AS};
+    }
 }
 
 =head3 C<value>
@@ -191,7 +229,7 @@ Values in the C<Row> can also be obtained by using the object as an array/hash r
 sub value {
     my($me, $col) = @_;
     croak 'The row is empty' unless $$me->{array};
-    if (UNIVERSAL::isa($col, 'DBIx::DBO::Column')) {
+    if (_isa($col, 'DBIx::DBO::Column')) {
         my $i = $me->_column_idx($col);
         return $$me->{array}[$i] if defined $i;
         croak 'The field '.$$me->{DBO}{dbd_class}->_qi($me, $col->[0]{Name}, $col->[1]).' was not included in this query';
@@ -239,7 +277,7 @@ sub _load {
 
     my $i;
     my @array;
-    for (@{$$me->{Columns}}) {
+    for ($me->columns) {
         $i++;
         $sth->bind_col($i, \$hash{$_}) unless exists $hash{$_};
     }

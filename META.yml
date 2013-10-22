@@ -18,7 +18,7 @@ name: DBIx-DBO
 provides:
   DBIx::DBO:
     file: lib/DBIx/DBO.pm
-    version: 0.34
+    version: 0.35
   DBIx::DBO::Query:
     file: lib/DBIx/DBO/Query.pm
     version: 0
@@ -41,4 +41,4 @@ resources:
   bugtracker: http://rt.cpan.org/Public/Dist/Display.html?Name=DBIx-DBO
   license: http://dev.perl.org/licenses/
   repository: https://vlyon.svn.beanstalkapp.com/src/dbo
-version: 0.34
+version: 0.35

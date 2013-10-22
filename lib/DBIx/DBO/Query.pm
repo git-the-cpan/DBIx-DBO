@@ -2,8 +2,10 @@ package DBIx::DBO::Query;
 
 use strict;
 use warnings;
-use Devel::Peek 'SvREFCNT';
 use Carp 'croak';
+use Devel::Peek 'SvREFCNT';
+
+use overload '**' => \&column, fallback => 1;
 
 BEGIN {
     if ($] < 5.008_009) {
@@ -17,6 +19,8 @@ BEGIN {
 
 sub _table_class { $_[0]{DBO}->_table_class }
 sub _row_class { $_[0]{DBO}->_row_class }
+
+*_isa = \&DBIx::DBO::DBD::_isa;
 
 =head1 NAME
 
@@ -65,7 +69,7 @@ In list context, the C<Query> object and L<Table|DBIx::DBO::Table> objects will 
 
 sub new {
     my $proto = shift;
-    UNIVERSAL::isa($_[0], 'DBIx::DBO') or croak 'Invalid DBO Object';
+    eval { $_[0]->isa('DBIx::DBO') } or croak 'Invalid DBO Object';
     my $class = ref($proto) || $proto;
     $class->_init(@_);
 }
@@ -127,7 +131,7 @@ sub _table_idx {
 
 sub _table_alias {
     my($me, $tbl) = @_;
-    return undef if $me == $tbl; # This means it's checking for an aliased column
+    return undef if $me == $tbl; # This means it's checking for an aliased column in this Query
     my $i = $me->_table_idx($tbl);
     croak 'The table is not in this query' unless defined $i;
     # Don't use aliases, when there's only 1 table
@@ -146,7 +150,7 @@ sub columns {
     @{$me->{Columns}} = do {
         if (@{$me->{build_data}{Showing}}) {
             map {
-                UNIVERSAL::isa($_, 'DBIx::DBO::Table') ? ($_->columns) : $me->_build_col_val_name(@$_)
+                _isa($_, 'DBIx::DBO::Table') ? ($_->columns) : $me->_build_col_val_name(@$_)
             } @{$me->{build_data}{Showing}};
         } else {
             map { $_->columns } @{$me->{Tables}};
@@ -163,7 +167,7 @@ sub _build_col_val_name {
     my @ary = map {
         if (not ref $_) {
             $me->rdbh->quote($_);
-        } elsif (UNIVERSAL::isa($_, 'DBIx::DBO::Column')) {
+        } elsif (_isa($_, 'DBIx::DBO::Column')) {
             $_->[1];
         } elsif (ref $_ eq 'SCALAR') {
             $$_;
@@ -179,10 +183,23 @@ sub _build_col_val_name {
   $query->column($alias_or_column_name);
 
 Returns a reference to a column for use with other methods.
+The C<**> method is a shortcut for the C<column> method.
 
 =cut
 
 sub column {
+    my($me, $col) = @_;
+    my @show;
+    @show = @{$me->{build_data}{Showing}} or @show = @{$me->{Tables}};
+    for my $fld (@show) {
+        return $me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column'
+            if (_isa($fld, 'DBIx::DBO::Table') and exists $fld->{Column_Idx}{$col})
+            or (ref($fld) eq 'ARRAY' and exists $fld->[2]{AS} and $col eq $fld->[2]{AS});
+    }
+    croak 'No such column: '.$me->{DBO}{dbd_class}->_qi($me, $col);
+}
+
+sub _inner_col {
     my($me, $col, $_check_aliases) = @_;
     $_check_aliases = $me->{DBO}{dbd_class}->_alias_preference($me, 'column') unless defined $_check_aliases;
     my $column;
@@ -222,7 +239,7 @@ sub show {
     undef @{$me->{build_data}{Showing}};
     undef @{$me->{Columns}};
     for my $fld (@_) {
-        if (UNIVERSAL::isa($fld, 'DBIx::DBO::Table')) {
+        if (_isa($fld, 'DBIx::DBO::Table')) {
             croak 'Invalid table to show' unless defined $me->_table_idx($fld);
             push @{$me->{build_data}{Showing}}, $fld;
             push @{$me->{Columns}}, $fld->columns;
@@ -269,8 +286,9 @@ Returns the C<Table> object.
 
 sub join_table {
     my($me, $tbl, $type) = @_;
-    if (UNIVERSAL::isa($tbl, 'DBIx::DBO::Table')) {
-        croak 'This table is already in this query' if $me->_table_idx($tbl);
+    if (_isa($tbl, 'DBIx::DBO::Table')) {
+        croak 'This table is already in this query' if defined $me->_table_idx($tbl);
+        croak 'This table is from a different DBO connection' if $me->{DBO} != $tbl->{DBO};
     } else {
         $tbl = $me->_table_class->new($me->{DBO}, $tbl);
     }
@@ -446,7 +464,7 @@ sub unwhere {
 sub _validate_where_fields {
     my $me = shift;
     for my $f (@_) {
-        if (UNIVERSAL::isa($f, 'DBIx::DBO::Column')) {
+        if (_isa($f, 'DBIx::DBO::Column')) {
             $me->{DBO}{dbd_class}->_valid_col($me, $f);
         } elsif (my $type = ref $f) {
             croak 'Invalid value type: '.$type if $type ne 'SCALAR';
@@ -974,6 +992,7 @@ sub _build_sql {
             undef %{$me->{Row}};
 
             $me->{sql} = $me->{DBO}{dbd_class}->_build_sql_select($me, $me->{build_data});
+            $me->{Row}{from} = $me->{DBO}{dbd_class}->_build_from($me, $me->{build_data});
             $me->{Row}->_copy_build_data;
             return $me->{sql};
         }
@@ -1167,6 +1186,7 @@ Assume you want to create a C<Query> and C<Row> class for a "Users" table:
   }
   
   sub _row_class { 'My::User' } # Rows are blessed into this class
+
 
   package My::User;
   our @ISA = qw(DBIx::DBO::Row);

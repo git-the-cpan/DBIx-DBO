@@ -2,7 +2,7 @@ use strict;
 use warnings;
 
 use Test::DBO ExampleP => 'ExampleP';
-use Test::DBO Sponge => 'Sponge', tests => 40;
+use Test::DBO Sponge => 'Sponge', tests => 45;
 
 MySponge::db::setup([qw(id name age)], [123, 'vlyon', 77]);
 
@@ -81,6 +81,9 @@ like $@, qr/^Invalid value argument, BETWEEN requires 2 values /, 'BETWEEN requi
 eval { $q->show($t2) };
 like $@, qr/^Invalid table to show /, 'Validate table in show';
 
+eval { $q->join_table($t) };
+like $@, qr/^This table is already in this query /, 'Check duplicate Table objects in join';
+
 eval { $q->join_on($t2) };
 like $@, qr/^Invalid table object to join onto /, 'Validate table in JOIN ON';
 
@@ -107,6 +110,19 @@ like $@, qr/^No read-write handle connected /, 'No read-write handle connected (
 
 eval { $q->update('id', 'oops') };
 like $@, qr/^No read-write handle connected /, 'No read-write handle connected (Query)';
+
+my $dbo2 = DBIx::DBO->new(undef, $dbh2);
+eval { $dbo2->table($t) };
+like $@, qr/^This table is from a different DBO connection /, 'Mismatching Table DBO in new Table';
+
+eval { $dbo2->query($t) };
+like $@, qr/^This table is from a different DBO connection /, 'Mismatching Table DBO in new Query';
+
+eval { $dbo2->row($t) };
+like $@, qr/^This table is from a different DBO connection /, 'Mismatching Table DBO in new Row';
+
+eval { $dbo2->row($q) };
+like $@, qr/^This query is from a different DBO connection /, 'Mismatching Query DBO in new Row';
 
 (my $r, $t) = DBIx::DBO::Row->new($dbo, $t->{Name});
 $r->config(LimitRowDelete => 0);
