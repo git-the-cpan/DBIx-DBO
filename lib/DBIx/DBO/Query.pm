@@ -60,10 +60,21 @@ A C<Query> object represents rows from a database (from one or more tables). Thi
 =head3 C<new>
 
   DBIx::DBO::Query->new($dbo, $table1, ...);
+  # or
+  $dbo->query($table1, ...);
 
 Create a new C<Query> object from the tables specified.
 In scalar context, just the C<Query> object will be returned.
 In list context, the C<Query> object and L<Table|DBIx::DBO::Table> objects will be returned for each table specified.
+Tables can be specified with the same arguments as L<DBIx::DBO::Table/new> or another Query can be used as a subquery.
+
+  my($query, $table1, $table2) = DBIx::DBO::Query->new($dbo, 'customers', ['history', 'transactions']);
+
+You can also pass in a Query instead of a Table to use that query as a subquery.
+
+  my $subquery = DBIx::DBO::Query->new($dbo, 'history.transactions');
+  my $query = DBIx::DBO::Query->new($dbo, 'customers', $subquery);
+  # SELECT * FROM customers, (SELECT * FROM history.transactions) t1;
 
 =cut
 
@@ -87,11 +98,16 @@ sub _init {
     return wantarray ? ($me, $me->tables) : $me;
 }
 
+sub _build_data {
+    $_[0]->{build_data};
+}
+
 =head3 C<reset>
 
   $query->reset;
 
 Reset the query, start over with a clean slate.
+Resets the columns to return, removes all the WHERE, DISTINCT, HAVING, LIMIT, GROUP BY & ORDER BY clauses.
 
 B<NB>: This will not remove the JOINs or JOIN ON clauses.
 
@@ -107,13 +123,11 @@ sub reset {
     $me->order_by;
     $me->unhaving;
     $me->limit;
-    # FIXME: Should we be deleting this?
-    delete $me->{Config};
 }
 
 =head3 C<tables>
 
-Return a list of L<Table|DBIx::DBO::Table> objects for this query.
+Return a list of L<Table|DBIx::DBO::Table> or Query objects that appear in the C<FROM> clause for this query.
 
 =cut
 
@@ -131,16 +145,35 @@ sub _table_idx {
 
 sub _table_alias {
     my($me, $tbl) = @_;
-    return undef if $me == $tbl; # This means it's checking for an aliased column in this Query
-    my $i = $me->_table_idx($tbl);
-    croak 'The table is not in this query' unless defined $i;
-    # Don't use aliases, when there's only 1 table
-    @{$me->{Tables}} > 1 ? 't'.($i + 1) : ();
+
+    # This means it's checking for an aliased column in this Query
+    return undef if $me == $tbl;
+
+    # Don't use aliases, when there's only 1 table unless its a subquery
+    return undef if $me->tables == 1 and _isa($tbl, 'DBIx::DBO::Table');
+
+    my $_from_alias = $me->{build_data}{_from_alias} ||= {};
+    return $_from_alias->{$tbl} ||= 't'.scalar(keys %$_from_alias);
+}
+
+sub _from {
+    my($me, $parent_build_data) = @_;
+    $parent_build_data->{_subqueries}{$me} = $me->sql;
+    local(
+        $me->{build_data}{_from_alias},
+        $me->{build_data}{from},
+        $me->{build_data}{show},
+        $me->{build_data}{where},
+        $me->{build_data}{orderby},
+        $me->{build_data}{groupby},
+        $me->{build_data}{having}
+    ) = ($parent_build_data->{_from_alias});
+    return '('.$me->{DBO}{dbd_class}->_build_sql_select($me).')';
 }
 
 =head3 C<columns>
 
-Return a list of column names.
+Return a list of column names that will be returned by L<fetch>.
 
 =cut
 
@@ -150,7 +183,7 @@ sub columns {
     @{$me->{Columns}} = do {
         if (@{$me->{build_data}{Showing}}) {
             map {
-                _isa($_, 'DBIx::DBO::Table') ? ($_->columns) : $me->_build_col_val_name(@$_)
+                _isa($_, 'DBIx::DBO::Table', 'DBIx::DBO::Query') ? ($_->columns) : $me->_build_col_val_name(@$_)
             } @{$me->{build_data}{Showing}};
         } else {
             map { $_->columns } @{$me->{Tables}};
@@ -171,6 +204,8 @@ sub _build_col_val_name {
             $_->[1];
         } elsif (ref $_ eq 'SCALAR') {
             $$_;
+        } elsif (_isa($_, 'DBIx::DBO::Query')) {
+            $_->_from($me->{build_data});
         }
     } @$fld;
     return $ary[0] unless defined $func;
@@ -181,6 +216,7 @@ sub _build_col_val_name {
 =head3 C<column>
 
   $query->column($alias_or_column_name);
+  $query ** $column_name;
 
 Returns a reference to a column for use with other methods.
 The C<**> method is a shortcut for the C<column> method.
@@ -194,6 +230,7 @@ sub column {
     for my $fld (@show) {
         return $me->{Column}{$col} ||= bless [$me, $col], 'DBIx::DBO::Column'
             if (_isa($fld, 'DBIx::DBO::Table') and exists $fld->{Column_Idx}{$col})
+            or (_isa($fld, 'DBIx::DBO::Query') and eval { $fld->column($col) })
             or (ref($fld) eq 'ARRAY' and exists $fld->[2]{AS} and $col eq $fld->[2]{AS});
     }
     croak 'No such column: '.$me->{DBO}{dbd_class}->_qi($me, $col);
@@ -222,11 +259,16 @@ sub _check_alias {
 =head3 C<show>
 
   $query->show(@columns);
-  $query->show($table1, {COL => $table2 ** 'name', AS => 'name2'});
-  $query->show($table1 ** 'id', {FUNC => 'UCASE(?)', COL => 'name', AS => 'alias'}, ...
+  $query->show($table1, { COL => $table2 ** 'name', AS => 'name2' });
+  $query->show($table1 ** 'id', { FUNC => 'UCASE(?)', COL => 'name', AS => 'alias' }, ...
 
-Specify which columns to show as an array.  If the array is empty all columns will be shown.
-If you use a Table object, all the columns from that table will be shown.
+List which columns to return when we L<fetch>.
+If called without arguments all columns will be shown, C<SELECT * ...>.
+If you use a Table object, all the columns from that table will be shown, C<SELECT table.* ...>
+You can also add a subquery by passing that Query as the value with an alias, Eg.
+
+  $query->show({ VAL => $subquery, AS => 'sq' }, ...);
+  # SELECT ($subquery_sql) AS sq ...
 
 =cut
 
@@ -239,24 +281,24 @@ sub show {
     undef @{$me->{build_data}{Showing}};
     undef @{$me->{Columns}};
     for my $fld (@_) {
-        if (_isa($fld, 'DBIx::DBO::Table')) {
+        if (_isa($fld, 'DBIx::DBO::Table', 'DBIx::DBO::Query')) {
             croak 'Invalid table to show' unless defined $me->_table_idx($fld);
             push @{$me->{build_data}{Showing}}, $fld;
             push @{$me->{Columns}}, $fld->columns;
             next;
         }
         # If the $fld is just a scalar use it as a column name not a value
-        push @{$me->{build_data}{Showing}}, [ $me->{DBO}{dbd_class}->_parse_col_val($me, $fld, Aliases => 0) ];
+        my @col = $me->{DBO}{dbd_class}->_parse_col_val($me, $fld, Aliases => 0);
+        push @{$me->{build_data}{Showing}}, \@col;
+        push @{$me->{Columns}}, $me->_build_col_val_name(@col);
     }
 }
 
 =head3 C<distinct>
 
   $query->distinct(1);
-  my $is_distinct = $query->distinct();
 
 Takes a boolean argument to add or remove the DISTINCT clause for the returned rows.
-Returns the previous setting.
 
 =cut
 
@@ -266,21 +308,20 @@ sub distinct {
     undef $me->{build_data}{show};
     my $distinct = $me->{build_data}{Show_Distinct};
     $me->{build_data}{Show_Distinct} = shift() ? 1 : undef if @_;
-    return $distinct;
 }
 
 =head3 C<join_table>
 
   $query->join_table($table, $join_type);
-  $query->join_table([$schema, $table], $join_type);
-  $query->join_table($table_object, $join_type);
 
 Join a table onto the query, creating a L<Table|DBIx::DBO::Table> object if needed.
 This will perform a comma (", ") join unless $join_type is specified.
 
+Tables can be specified with the same arguments as L<DBIx::DBO::Table/new> or another Query can be used as a subquery.
+
 Valid join types are any accepted by the DB.  Eg: C<'JOIN'>, C<'LEFT'>, C<'RIGHT'>, C<undef> (for comma join), C<'INNER'>, C<'OUTER'>, ...
 
-Returns the C<Table> object.
+Returns the Table or Query object added.
 
 =cut
 
@@ -288,6 +329,9 @@ sub join_table {
     my($me, $tbl, $type) = @_;
     if (_isa($tbl, 'DBIx::DBO::Table')) {
         croak 'This table is already in this query' if defined $me->_table_idx($tbl);
+        croak 'This table is from a different DBO connection' if $me->{DBO} != $tbl->{DBO};
+    } elsif (_isa($tbl, 'DBIx::DBO::Query')) {
+        # Subquery
         croak 'This table is from a different DBO connection' if $me->{DBO} != $tbl->{DBO};
     } else {
         $tbl = $me->_table_class->new($me->{DBO}, $tbl);
@@ -308,7 +352,6 @@ sub join_table {
     undef $me->{sql};
     undef $me->{build_data}{from};
     undef $me->{build_data}{show};
-    push @{$me->{build_data}{Showing}}, $tbl if @{$me->{build_data}{Showing} ||= []};
     undef @{$me->{Columns}};
     return $tbl;
 }
@@ -410,6 +453,12 @@ A Column object: C<$table ** 'id'> or C<$table-E<gt>column('id')>
 
 =item *
 
+A Query object, to be used as a subquery.
+
+  $query->where('id', '>', $subquery);
+
+=item *
+
 A hash reference: see L</Complex_expressions>
 
 =back
@@ -467,7 +516,7 @@ sub _validate_where_fields {
         if (_isa($f, 'DBIx::DBO::Column')) {
             $me->{DBO}{dbd_class}->_valid_col($me, $f);
         } elsif (my $type = ref $f) {
-            croak 'Invalid value type: '.$type if $type ne 'SCALAR';
+            croak 'Invalid value type: '.$type if $type ne 'SCALAR' and not _isa($f, 'DBIx::DBO::Query');
         }
     }
 }
@@ -715,6 +764,10 @@ sub order_by {
 Limit the maximum number of rows returned to C<$rows>, optionally skipping the first C<$offset> rows.
 When called without arguments or if C<$rows> is undefined, the limit is removed.
 
+NB. Oracle does not support pagging prior to version 12c, so this has been implemented in software,
+, but if an offset is given, an extra column "_DBO_ROWNUM_" is added to the Query to achieve this.
+TODO: Implement the new "FIRST n / NEXT n" clause if connected to a 12c database.
+
 =cut
 
 sub limit {
@@ -739,7 +792,7 @@ You can specify a slice by including a 'Slice' or 'Columns' attribute in C<%attr
 sub arrayref {
     my($me, $attr) = @_;
     $me->{DBO}{dbd_class}->_selectall_arrayref($me, $me->sql, $attr,
-        $me->{DBO}{dbd_class}->_bind_params_select($me, $me->{build_data}));
+        $me->{DBO}{dbd_class}->_bind_params_select($me));
 }
 
 =head3 C<hashref>
@@ -755,7 +808,7 @@ C<$key_field> defines which column, or columns, are used as keys in the returned
 sub hashref {
     my($me, $key, $attr) = @_;
     $me->{DBO}{dbd_class}->_selectall_hashref($me, $me->sql, $key, $attr,
-        $me->{DBO}{dbd_class}->_bind_params_select($me, $me->{build_data}));
+        $me->{DBO}{dbd_class}->_bind_params_select($me));
 }
 
 =head3 C<col_arrayref>
@@ -769,7 +822,7 @@ Run the query using L<DBI-E<gt>selectcol_arrayref|DBI/"selectcol_arrayref"> whic
 
 sub col_arrayref {
     my($me, $attr) = @_;
-    my($sql, @bind) = ($me->sql, $me->{DBO}{dbd_class}->_bind_params_select($me, $me->{build_data}));
+    my($sql, @bind) = ($me->sql, $me->{DBO}{dbd_class}->_bind_params_select($me));
     $me->{DBO}{dbd_class}->_sql($me, $sql, @bind);
     my $sth = $me->rdbh->prepare($sql, $attr) or return;
     unless (defined $attr->{Columns}) {
@@ -877,9 +930,9 @@ sub run {
 
 sub _execute {
     my $me = shift;
-    $me->{DBO}{dbd_class}->_sql($me, $me->sql, $me->{DBO}{dbd_class}->_bind_params_select($me, $me->{build_data}));
+    $me->{DBO}{dbd_class}->_sql($me, $me->sql, $me->{DBO}{dbd_class}->_bind_params_select($me));
     $me->_sth or return;
-    $me->{sth}->execute($me->{DBO}{dbd_class}->_bind_params_select($me, $me->{build_data}));
+    $me->{sth}->execute($me->{DBO}{dbd_class}->_bind_params_select($me));
 }
 
 sub _bind_cols_to_hash {
@@ -937,9 +990,9 @@ sub count_rows {
     my $old_sb = delete $me->{build_data}{Show_Bind};
     $me->{build_data}{show} = '1';
 
-    my $sql = 'SELECT COUNT(*) FROM ('.$me->{DBO}{dbd_class}->_build_sql_select($me, $me->{build_data}).') t';
+    my $sql = 'SELECT COUNT(*) FROM ('.$me->{DBO}{dbd_class}->_build_sql_select($me).') t';
     my($count) = $me->{DBO}{dbd_class}->_selectrow_array($me, $sql, undef,
-        $me->{DBO}{dbd_class}->_bind_params_select($me, $me->{build_data}));
+        $me->{DBO}{dbd_class}->_bind_params_select($me));
 
     $me->{build_data}{Show_Bind} = $old_sb if $old_sb;
     undef $me->{build_data}{show};
@@ -971,8 +1024,53 @@ Returns the SQL statement string.
 
 =cut
 
+sub _search_where_chunk {
+    map {
+        ref $_->[0] eq 'ARRAY' ? _search_where_chunk(@$_) : ($_->[1], $_->[4])
+    } @_
+}
+
+our @_RECURSIVE_SQ;
 sub sql {
     my $me = shift;
+    # Check for changes to subqueries and recursion
+    croak 'Recursive subquery found' if grep $me eq $_, @_RECURSIVE_SQ;
+    local @_RECURSIVE_SQ = (@_RECURSIVE_SQ, $me);
+    for my $fld (@{$me->{build_data}{Showing}}) {
+        if (ref $fld eq 'ARRAY' and @{$fld->[0]} == 1 and _isa($fld->[0][0], 'DBIx::DBO::Query')) {
+            my $sq = $fld->[0][0];
+            if ($sq->sql ne ($me->{build_data}{_subqueries}{$sq} ||= '')) {
+                undef $me->{sql};
+                undef $me->{build_data}{show};
+            }
+        }
+    }
+    for my $sq (@{$me->{Tables}}) {
+        if (_isa($sq, 'DBIx::DBO::Query')) {
+            if ($sq->sql ne ($me->{build_data}{_subqueries}{$sq} ||= '')) {
+                undef $me->{sql};
+                undef $me->{build_data}{from};
+            }
+        }
+    }
+    for my $w (map { $_ ? _search_where_chunk(@$_) : () } @{$me->{build_data}{Join_On}}) {
+        if (@$w == 1 and _isa($w->[0], 'DBIx::DBO::Query')) {
+            my $sq = $w->[0];
+            if ($sq->sql ne ($me->{build_data}{_subqueries}{$sq} ||= '')) {
+                undef $me->{sql};
+                undef $me->{build_data}{from};
+            }
+        }
+    }
+    for my $w (_search_where_chunk(@{$me->{build_data}{Where_Data}})) {
+        if (@$w == 1 and _isa($w->[0], 'DBIx::DBO::Query')) {
+            my $sq = $w->[0];
+            if ($sq->sql ne ($me->{build_data}{_subqueries}{$sq} ||= '')) {
+                undef $me->{sql};
+                undef $me->{build_data}{where};
+            }
+        }
+    }
     $me->{sql} || $me->_build_sql;
 }
 
@@ -999,7 +1097,7 @@ sub _build_sql {
     }
     undef @{$me->{Columns}};
 
-    $me->{sql} = $me->{DBO}{dbd_class}->_build_sql_select($me, $me->{build_data});
+    $me->{sql} = $me->{DBO}{dbd_class}->_build_sql_select($me);
 }
 
 # Get the DBI statement handle for the query.
@@ -1025,8 +1123,8 @@ and returns false if there was an error.
 sub update {
     my $me = shift;
     my @update = $me->{DBO}{dbd_class}->_parse_set($me, @_);
-    my $sql = $me->{DBO}{dbd_class}->_build_sql_update($me, $me->{build_data}, @update);
-    $me->{DBO}{dbd_class}->_do($me, $sql, undef, $me->{DBO}{dbd_class}->_bind_params_update($me, $me->{build_data}));
+    my $sql = $me->{DBO}{dbd_class}->_build_sql_update($me, @update);
+    $me->{DBO}{dbd_class}->_do($me, $sql, undef, $me->{DBO}{dbd_class}->_bind_params_update($me));
 }
 
 =head3 C<finish>

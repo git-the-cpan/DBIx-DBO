@@ -44,11 +44,11 @@ They can also be used for INSERTs, DELETEs and simple lookups (fetch_*).
 =head3 C<new>
 
   DBIx::DBO::Table->new($dbo, $table);
-  DBIx::DBO::Table->new($dbo, [$schema, $table]);
-  DBIx::DBO::Table->new($dbo, $table_object);
+  # or
+  $dbo->table($table);
 
 Create and return a new C<Table> object.
-Tables can be specified by their name or an arrayref of schema and table name or another C<Table> object.
+The C<$table> argument that specifies the table can be a string containing the table name, C<'customers'> or C<'history.log'>, it can be an arrayref of schema and table name C<['history', 'log']> or as another Table object to clone.
 
 =cut
 
@@ -170,7 +170,8 @@ sub fetch_value {
     my @bind;
     $col = $me->{DBO}{dbd_class}->_build_val($me, \@bind, $me->{DBO}{dbd_class}->_parse_col_val($me, $col));
     my $sql = "SELECT $col FROM ".$me->_from;
-    $sql .= ' WHERE '.$_ if $_ = $me->{DBO}{dbd_class}->_build_quick_where($me, \@bind, @_);
+    my $clause;
+    $sql .= ' WHERE '.$clause if $clause = $me->{DBO}{dbd_class}->_build_quick_where($me, \@bind, @_);
     my $ref = $me->{DBO}{dbd_class}->_selectrow_arrayref($me, $sql, undef, @bind);
     return $ref && $ref->[0];
 }
@@ -187,7 +188,8 @@ sub fetch_hash {
     my $me = shift;
     my $sql = 'SELECT * FROM '.$me->_from;
     my @bind;
-    $sql .= ' WHERE '.$_ if $_ = $me->{DBO}{dbd_class}->_build_quick_where($me, \@bind, @_);
+    my $clause;
+    $sql .= ' WHERE '.$clause if $clause = $me->{DBO}{dbd_class}->_build_quick_where($me, \@bind, @_);
     $me->{DBO}{dbd_class}->_selectrow_hashref($me, $sql, undef, @bind);
 }
 
@@ -204,7 +206,8 @@ sub fetch_column {
     my @bind;
     $col = $me->{DBO}{dbd_class}->_build_val($me, \@bind, $me->{DBO}{dbd_class}->_parse_col_val($me, $col));
     my $sql = "SELECT $col FROM ".$me->_from;
-    $sql .= ' WHERE '.$_ if $_ = $me->{DBO}{dbd_class}->_build_quick_where($me, \@bind, @_);
+    my $clause;
+    $sql .= ' WHERE '.$clause if $clause = $me->{DBO}{dbd_class}->_build_quick_where($me, \@bind, @_);
     $me->{DBO}{dbd_class}->_sql($me, $sql, @bind);
     return $me->rdbh->selectcol_arrayref($sql, undef, @bind);
 }
@@ -310,7 +313,8 @@ sub delete {
     my $me = shift;
     my $sql = 'DELETE FROM '.$me->_from;
     my @bind;
-    $sql .= ' WHERE '.$_ if $_ = $me->{DBO}{dbd_class}->_build_quick_where($me, \@bind, @_);
+    my $clause;
+    $sql .= ' WHERE '.$clause if $clause = $me->{DBO}{dbd_class}->_build_quick_where($me, \@bind, @_);
     $me->{DBO}{dbd_class}->_do($me, $sql, undef, @bind);
 }
 

@@ -52,7 +52,7 @@ sub _get_column_info {
     $cols = $cols && $cols->fetchall_arrayref({}) || [];
     croak 'Invalid table: '.$class->_qi($me, $schema, $table) unless @$cols;
 
-    map { $_->{COLUMN_NAME} => $_->{ORDINAL_POSITION} } @$cols;
+    return map { $_->{COLUMN_NAME} => $_->{ORDINAL_POSITION} } @$cols;
 }
 
 sub _get_table_info {
@@ -65,7 +65,7 @@ sub _get_table_info {
     $h{PrimaryKeys} = [];
     $class->_set_table_key_info($me, $schema, $table, \%h);
 
-    $me->{TableInfo}{defined $schema ? $schema : ''}{$table} = \%h;
+    return $me->{TableInfo}{defined $schema ? $schema : ''}{$table} = \%h;
 }
 
 sub _set_table_key_info {
@@ -118,7 +118,7 @@ sub _qi {
     return $me->rdbh->quote_identifier(@id) if $me->config('QuoteIdentifier');
     # Strip off any null/undef elements (ie schema)
     shift(@id) while @id and not (defined $id[0] and length $id[0]);
-    join '.', @id;
+    return join '.', @id;
 }
 
 sub _sql {
@@ -150,94 +150,106 @@ sub _do {
 }
 
 sub _build_sql_select {
-    my($class, $me, $h) = @_;
-    my $sql = 'SELECT '.$class->_build_show($me, $h);
-    $sql .= ' FROM '.$class->_build_from($me, $h);
-    $sql .= ' WHERE '.$_ if $_ = $class->_build_where($me, $h);
-    $sql .= ' GROUP BY '.$_ if $_ = $class->_build_group($me, $h);
-    $sql .= ' HAVING '.$_ if $_ = $class->_build_having($me, $h);
-    $sql .= ' ORDER BY '.$_ if $_ = $class->_build_order($me, $h);
-    $sql .= ' '.$_ if $_ = $class->_build_limit($me, $h);
-    $sql;
+    my($class, $me) = @_;
+    my $sql = 'SELECT '.$class->_build_show($me);
+    $sql .= ' FROM '.$class->_build_from($me);
+    my $clause;
+    $sql .= ' WHERE '.$clause if $clause = $class->_build_where($me);
+    $sql .= ' GROUP BY '.$clause if $clause = $class->_build_group($me);
+    $sql .= ' HAVING '.$clause if $clause = $class->_build_having($me);
+    $sql .= ' ORDER BY '.$clause if $clause = $class->_build_order($me);
+    $sql .= ' '.$clause if $clause = $class->_build_limit($me);
+    return $sql;
 }
 
 sub _bind_params_select {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     map {
         exists $h->{$_} ? @{$h->{$_}} : ()
     } qw(Show_Bind From_Bind Where_Bind Group_Bind Having_Bind Order_Bind);
 }
 
 sub _build_sql_update {
-    my($class, $me, $h, @arg) = @_;
-    croak 'Update is not valid with a GROUP BY clause' if $class->_build_group($me, $h);
-    croak 'Update is not valid with a HAVING clause' if $class->_build_having($me, $h);
-    my $sql = 'UPDATE '.$class->_build_from($me, $h);
-    $sql .= ' SET '.$class->_build_set($me, $h, @arg);
-    $sql .= ' WHERE '.$_ if $_ = $class->_build_where($me, $h);
-    $sql .= ' ORDER BY '.$_ if $_ = $class->_build_order($me, $h);
-    $sql .= ' '.$_ if $_ = $class->_build_limit($me, $h);
+    my($class, $me, @arg) = @_;
+    croak 'Update is not valid with a GROUP BY clause' if $class->_build_group($me);
+    croak 'Update is not valid with a HAVING clause' if $class->_build_having($me);
+    my $sql = 'UPDATE '.$class->_build_from($me);
+    $sql .= ' SET '.$class->_build_set($me, @arg);
+    my $clause;
+    $sql .= ' WHERE '.$clause if $clause = $class->_build_where($me);
+    $sql .= ' ORDER BY '.$clause if $clause = $class->_build_order($me);
+    $sql .= ' '.$clause if $clause = $class->_build_limit($me);
     $sql;
 }
 
 sub _bind_params_update {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     map {
         exists $h->{$_} ? @{$h->{$_}} : ()
     } qw(From_Bind Set_Bind Where_Bind Order_Bind);
 }
 
 sub _build_sql_delete {
-    my($class, $me, $h) = @_;
-    croak 'Delete is not valid with a GROUP BY clause' if $class->_build_group($me, $h);
-    my $sql = 'DELETE FROM '.$class->_build_from($me, $h);
-    $sql .= ' WHERE '.$_ if $_ = $class->_build_where($me, $h);
-    $sql .= ' ORDER BY '.$_ if $_ = $class->_build_order($me, $h);
-    $sql .= ' '.$_ if $_ = $class->_build_limit($me, $h);
+    my($class, $me) = @_;
+    croak 'Delete is not valid with a GROUP BY clause' if $class->_build_group($me);
+    my $sql = 'DELETE FROM '.$class->_build_from($me);
+    my $clause;
+    $sql .= ' WHERE '.$clause if $clause = $class->_build_where($me);
+    $sql .= ' ORDER BY '.$clause if $clause = $class->_build_order($me);
+    $sql .= ' '.$clause if $clause = $class->_build_limit($me);
     $sql;
 }
 
 sub _bind_params_delete {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     map {
         exists $h->{$_} ? @{$h->{$_}} : ()
     } qw(From_Bind Where_Bind Order_Bind);
 }
 
 sub _build_table {
-    my($class, $me, $h, $t) = @_;
+    my($class, $me, $t) = @_;
+    my $from = $t->_from($me->{build_data});
     my $alias = $me->_table_alias($t);
     $alias = defined $alias ? ' '.$class->_qi($me, $alias) : '';
-    $t->_from.$alias;
+    return $from.$alias;
 }
 
 sub _build_show {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     return $h->{show} if defined $h->{show};
     my $distinct = $h->{Show_Distinct} ? 'DISTINCT ' : '';
     undef @{$h->{Show_Bind}};
     return $h->{show} = $distinct.'*' unless @{$h->{Showing}};
     my @flds;
     for my $fld (@{$h->{Showing}}) {
-        push @flds, _isa($fld, 'DBIx::DBO::Table')
-            ? $class->_qi($me, $me->_table_alias($fld) || $fld->{Name}).'.*'
-            : $class->_build_val($me, $h->{Show_Bind}, @$fld);
+        if (_isa($fld, 'DBIx::DBO::Table', 'DBIx::DBO::Query')) {
+            push @flds, $class->_qi($me, $me->_table_alias($fld) || $fld->{Name}).'.*';
+        } else {
+            $h->{_subqueries}{$fld->[0][0]} = $fld->[0][0]->sql if _isa($fld->[0][0], 'DBIx::DBO::Query');
+            push @flds, $class->_build_val($me, $h->{Show_Bind}, @$fld);
+        }
     }
-    $h->{show} = $distinct.join(', ', @flds);
+    return $h->{show} = $distinct.join(', ', @flds);
 }
 
 sub _build_from {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     return $h->{from} if defined $h->{from};
     undef @{$h->{From_Bind}};
     my @tables = $me->tables;
-    my $from = $class->_build_table($me, $h, $tables[0]);
+    $h->{from} = $class->_build_table($me, $tables[0]);
     for (my $i = 1; $i < @tables; $i++) {
-        $from .= $h->{Join}[$i].$class->_build_table($me, $h, $tables[$i]);
-        $from .= ' ON '.join(' AND ', $class->_build_where_chunk($me, $h->{From_Bind}, 'OR', $h->{Join_On}[$i]))
+        $h->{from} .= $h->{Join}[$i].$class->_build_table($me, $tables[$i]);
+        $h->{from} .= ' ON '.join(' AND ', $class->_build_where_chunk($me, $h->{From_Bind}, 'OR', $h->{Join_On}[$i]))
             if $h->{Join_On}[$i];
     }
-    return $from;
+    return $h->{from};
 }
 
 sub _parse_col_val {
@@ -350,6 +362,8 @@ sub _build_val {
             $class->_build_col($me, $_);
         } elsif (ref $_ eq 'SCALAR') {
             $$_;
+        } elsif (_isa($_, 'DBIx::DBO::Query')) {
+            $_->_from($me->{build_data});
         } else {
             croak 'Invalid field: '.$_;
         }
@@ -368,13 +382,14 @@ sub _build_val {
 
 # Construct the WHERE clause
 sub _build_where {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     return $h->{where} if defined $h->{where};
     undef @{$h->{Where_Bind}};
     my @where;
     push @where, $class->_build_quick_where($me, $h->{Where_Bind}, @{$h->{Quick_Where}}) if exists $h->{Quick_Where};
     push @where, $class->_build_where_chunk($me, $h->{Where_Bind}, 'OR', $h->{Where_Data}) if exists $h->{Where_Data};
-    $h->{where} = join ' AND ', @where;
+    return $h->{where} = join ' AND ', @where;
 }
 
 # Construct the WHERE contents of one set of parentheses
@@ -445,7 +460,7 @@ sub _build_quick_where {
                 }
             } . $class->_build_val($me, $bind, $class->_parse_val($me, $val));
     }
-    join ' AND ', @where;
+    return join ' AND ', @where;
 }
 
 sub _parse_set {
@@ -462,46 +477,51 @@ sub _parse_set {
 }
 
 sub _build_set {
-    my($class, $me, $h, @arg) = @_;
+    my($class, $me, @arg) = @_;
+    my $h = $me->_build_data;
     undef @{$h->{Set_Bind}};
     my @set;
     while (@arg) {
         push @set, $class->_build_col($me, shift @arg).' = '.$class->_build_val($me, $h->{Set_Bind}, @{shift @arg});
     }
-    join ', ', @set;
+    return join ', ', @set;
 }
 
 sub _build_group {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     return $h->{group} if defined $h->{group};
     undef @{$h->{Group_Bind}};
-    $h->{group} = join ', ', map $class->_build_val($me, $h->{Group_Bind}, @$_), @{$h->{GroupBy}};
+    return $h->{group} = join ', ', map $class->_build_val($me, $h->{Group_Bind}, @$_), @{$h->{GroupBy}};
 }
 
 # Construct the HAVING clause
 sub _build_having {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     return $h->{having} if defined $h->{having};
     undef @{$h->{Having_Bind}};
     my @having;
     push @having, $class->_build_where_chunk($me, $h->{Having_Bind}, 'OR', $h->{Having_Data}) if exists $h->{Having_Data};
-    $h->{having} = join ' AND ', @having;
+    return $h->{having} = join ' AND ', @having;
 }
 
 sub _build_order {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     return $h->{order} if defined $h->{order};
     undef @{$h->{Order_Bind}};
-    $h->{order} = join ', ', map $class->_build_val($me, $h->{Order_Bind}, @$_), @{$h->{OrderBy}};
+    return $h->{order} = join ', ', map $class->_build_val($me, $h->{Order_Bind}, @$_), @{$h->{OrderBy}};
 }
 
 sub _build_limit {
-    my($class, $me, $h) = @_;
+    my($class, $me) = @_;
+    my $h = $me->_build_data;
     return $h->{limit} if defined $h->{limit};
     return $h->{limit} = '' unless defined $h->{LimitOffset};
     $h->{limit} = 'LIMIT '.$h->{LimitOffset}[0];
     $h->{limit} .= ' OFFSET '.$h->{LimitOffset}[1] if $h->{LimitOffset}[1];
-    $h->{limit};
+    return $h->{limit};
 }
 
 sub _get_config {
@@ -603,7 +623,7 @@ sub _safe_bulk_insert {
 
 # Row methods
 sub _reset_row_on_update {
-    my($class, $me, $build_data, @update) = @_;
+    my($class, $me, @update) = @_;
     my $on_row_update = $me->config('OnRowUpdate') || 'simple';
 
     if ($on_row_update ne 'empty') {
@@ -630,15 +650,17 @@ sub _reset_row_on_update {
 
         if ($on_row_update eq 'reload') {
             # Attempt reload
-            my @cols = map $build_data->{Quick_Where}[$_ << 1], 0 .. $#{$build_data->{Quick_Where}} >> 1;
+            my @cols = map $$me->{build_data}{Quick_Where}[$_ << 1], 0 .. $#{$$me->{build_data}{Quick_Where}} >> 1;
             my @cidx = map $me->_column_idx($_), @cols;
             unless (grep $cant_update[$_], @cidx) {
                 my %bd = %{$$me->{build_data}};
                 delete $bd{Where_Data};
                 delete $bd{where};
                 $bd{Quick_Where} = [map { $cols[$_] => $$me->{array}[ $cidx[$_] ] } 0 .. $#cols];
-                my $sql = $class->_build_sql_select($me, \%bd);
-                my @bind = $class->_bind_params_select($me, \%bd);
+                my($sql, @bind) = do {
+                    local $$me->{build_data} = \%bd;
+                    ($class->_build_sql_select($me), $class->_bind_params_select($me));
+                };
                 return $me->_load($sql, @bind);
             }
         }
@@ -660,6 +682,7 @@ sub _build_data_matching_this_row {
         }
     }
     my %h = (
+        Showing => $$me->{build_data}{Showing},
         from => $$me->{build_data}{from},
         Quick_Where => \@quick_where
     );

@@ -444,7 +444,7 @@ sub query_methods {
     pass 'Method DBIx::DBO::Query->order_by';
 
     # Get a valid sth
-    isa_ok $q->_sth, 'DBI::st', '$q->_sth';
+    isa_ok $q->_sth, 'DBI::st', '$q->_sth' or diag "SQL command failed: _sth\n  $q->{sql}\n".$q->rdbh->errstr;
 
     # Get a Row object
     my $r = $q->row;
@@ -529,15 +529,29 @@ sub query_methods {
         'Method DBIx::DBO::Query->group_by') or diag sql_err($q);
 
     # Update & Load a Row with aliased columns
-    $q->show('name', {COL => 'id', AS => 'key'});
+    $q->show($t, {COL => 'id', AS => 'key'});
     $q->group_by;
-    is_deeply [$q->columns], [qw(name key)], 'Method DBIx::DBO::Query->columns (with aliases)';
+    is_deeply [$q->columns], [qw(id name key)], 'Method DBIx::DBO::Query->columns (with aliases)';
     $r = $q->fetch;
-    is_deeply [$q->columns], [qw(name key)], 'Method DBIx::DBO::Query->columns (after fetch)';
+    is_deeply [$q->columns], [qw(id name key)], 'Method DBIx::DBO::Query->columns (after fetch)';
     ok $r->update(id => $r->{key}), 'Can update a Row despite using aliases' or diag sql_err($r);
     ok $r->load(id => 15), 'Can load a Row despite using aliases' or diag sql_err($r);
 
     isa_ok $q ** 'key', 'DBIx::DBO::Column', q{$q ** $alias};
+
+    # Limit & limit with Offset
+    $q->show('id');
+    $q->order_by('id');
+
+    $q->limit(3);
+    $got = [];
+    for (my $row; $row = $q->fetch; push @$got, $row->[0]) {}
+    is_deeply $got, [1,2,7], 'Method DBIx::DBO::Query->limit';
+
+    $q->limit(3, 2);
+    $got = [];
+    for (my $row; $row = $q->fetch; push @$got, $row->[0]) {}
+    is_deeply $got, [7,14,15], 'Method DBIx::DBO::Query->limit (with offset)';
 
     $q->finish;
     return $q;
@@ -660,20 +674,13 @@ sub join_methods {
     ok $q->close_join_on_bracket($t2), 'Method DBIx::DBO::Query->close_join_on_bracket';
 
     $q->order_by({ COL => $t1 ** 'name', ORDER => 'DESC' });
-    if ($dbd eq 'Oracle') {
-        # Oracle doesn't support LIMIT OFFSET
-        $q->fetch;
-        $q->fetch;
-        $q->fetch;
-    } else {
-        $q->limit(1, 3);
-    }
+    $q->limit(1, 3);
 
     SKIP: {
         $q->_sth or diag sql_err($q) or fail 'LEFT JOIN' or skip 'No Left Join', 3;
         $r = $q->fetch or fail 'LEFT JOIN' or skip 'No Left Join', 3;
 
-        is_deeply \@$r, [ 14, 'James Bond', undef, undef ], 'LEFT JOIN';
+        is_deeply [@$r[0..3]], [14, 'James Bond', undef, undef], 'LEFT JOIN';
         is $r->_column_idx($t2 ** 'id'), 2, 'Method DBIx::DBO::Row->_column_idx';
         is $r->value($t2 ** 'id'), undef, 'Method DBIx::DBO::Row->value';
 
